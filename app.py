@@ -5,8 +5,15 @@ import pytesseract
 import io
 import re
 from datetime import datetime
-import fitz  # PyMuPDF
 import os
+
+# Importação condicional do PyMuPDF
+try:
+    import fitz  # PyMuPDF
+    PYMUPDF_AVAILABLE = True
+except ImportError:
+    PYMUPDF_AVAILABLE = False
+    st.warning("PyMuPDF não está disponível. PDFs serão convertidos para imagem.")
 
 # Configuração da página
 st.set_page_config(
