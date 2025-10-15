@@ -5,6 +5,7 @@ from PIL import Image, ImageEnhance, ImageFilter
 import io
 import re
 from datetime import datetime
+import numpy as np # Necessário para a conversão de imagem para array
 
 # --- Importar EasyOCR e PyTorch (necessários) ---
 import easyocr
@@ -59,13 +60,20 @@ def apply_image_enhancements(img):
     return img
 
 def run_easyocr(image):
-    """Executa o EasyOCR na imagem fornecida e retorna o texto unido."""
+    """
+    Executa o EasyOCR na imagem fornecida (após conversão para NumPy array) 
+    e retorna o texto unido.
+    """
     if reader is None:
         return ""
 
     try:
+        # CORREÇÃO: Converter a imagem PIL (Pillow) para um NumPy array, que é o formato
+        # esperado pelo EasyOCR, evitando o erro "Invalid input type".
+        img_array = np.array(image)
+        
         # readtext retorna apenas o texto, eliminando caixas delimitadoras e confiança
-        results = reader.readtext(image, detail=0) 
+        results = reader.readtext(img_array, detail=0) 
         
         # Juntar todo o texto extraído em uma única string
         full_text = " ".join(results)
@@ -355,7 +363,7 @@ if uploaded_files:
             workbook = writer.book
             worksheet = writer.sheets['Dados Médicos']
             
-            # Formatação do cabeçalho (cor alterada para diferenciar do Tesseract)
+            # Formatação do cabeçalho
             header_format = workbook.add_format({
                 'bold': True,
                 'text_wrap': True,
