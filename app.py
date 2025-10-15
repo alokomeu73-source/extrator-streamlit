@@ -1,26 +1,21 @@
+# app.py
 import streamlit as st
 import pandas as pd
-from PIL import Image
-import pytesseract
+from PIL import Image, ImageEnhance, ImageFilter
 import io
 import re
 from datetime import datetime
-import os
 
-# Configurar caminho do Tesseract
-if os.path.exists('/usr/bin/tesseract'):
-    pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
-elif os.path.exists('/usr/local/bin/tesseract'):
-    pytesseract.pytesseract.tesseract_cmd = '/usr/local/bin/tesseract'
+# --- Importar EasyOCR e PyTorch (necessários) ---
+import easyocr
 
-# Importar PyMuPDF
+# --- Importar PyMuPDF (fitz) para PDFs ---
 try:
     import fitz
     PYMUPDF_AVAILABLE = True
 except ImportError:
     PYMUPDF_AVAILABLE = False
-    st.warning("PyMuPDF não disponível. Apenas imagens serão processadas.")
-
+    
 # ==================== CONFIGURAÇÃO DA PÁGINA ====================
 st.set_page_config(
     page_title="Extração de Dados Médicos - OCR",
@@ -28,22 +23,61 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("🏥 Extração de Dados de Guias Médicas")
+st.title("🏥 Extração de Dados de Guias Médicas (EasyOCR)")
 st.markdown("""
-Extrai automaticamente as seguintes informações de guias médicas:
-- **1 - Registro ANS**
-- **2 - Número GUIA**
-- **4 - Data de Autorização**
-- **10 - Nome**
-- **Valor da Consulta**
+Esta ferramenta utiliza **EasyOCR** e pré-processamento de imagem para extrair as informações
+das Guias: **Registro ANS**, **Número GUIA**, **Data de Autorização**, **Nome do Paciente** e **Valor da Consulta**.
 """)
+
+# ==================== INICIALIZAÇÃO E CACHE DO EASYOCR READER ====================
+
+@st.cache_resource
+def load_easyocr_reader():
+    """Carrega o modelo do EasyOCR para o idioma Português (pt)."""
+    try:
+        # Usamos gpu=False para garantir compatibilidade e estabilidade no Streamlit Cloud
+        reader = easyocr.Reader(['pt'], gpu=False)
+        return reader
+    except Exception as e:
+        st.error(f"Erro Crítico ao carregar o EasyOCR: {e}. Verifique se o PyTorch (torch) está instalado corretamente.")
+        return None
+
+# Carrega o leitor (caching garante que isso só ocorra uma vez)
+reader = load_easyocr_reader()
 
 # ==================== FUNÇÕES DE EXTRAÇÃO DE TEXTO ====================
 
+def apply_image_enhancements(img):
+    """Aplica melhorias de contraste e nitidez na imagem para otimizar o OCR."""
+    if img.mode != 'RGB':
+        img = img.convert('RGB')
+        
+    enhancer = ImageEnhance.Contrast(img)
+    img = enhancer.enhance(2)
+    img = img.filter(ImageFilter.SHARPEN)
+    
+    return img
+
+def run_easyocr(image):
+    """Executa o EasyOCR na imagem fornecida e retorna o texto unido."""
+    if reader is None:
+        return ""
+
+    try:
+        # readtext retorna apenas o texto, eliminando caixas delimitadoras e confiança
+        results = reader.readtext(image, detail=0) 
+        
+        # Juntar todo o texto extraído em uma única string
+        full_text = " ".join(results)
+        return full_text
+    except Exception as e:
+        st.error(f"EasyOCR falhou durante a execução: {str(e)}")
+        return ""
+
 def extract_text_from_pdf(pdf_file):
-    """Extrai texto de arquivo PDF usando PyMuPDF e OCR quando necessário"""
+    """Extrai texto de PDF nativo ou usa EasyOCR se for escaneado."""
     if not PYMUPDF_AVAILABLE:
-        st.error("PyMuPDF não está instalado")
+        st.error("PyMuPDF não está instalado para processar PDFs.")
         return None
     
     try:
@@ -55,93 +89,58 @@ def extract_text_from_pdf(pdf_file):
             page = pdf_document[page_num]
             page_text = page.get_text()
             
-            # Se texto direto for muito curto, fazer OCR com melhor qualidade
+            # Condição para tentar OCR (se o texto nativo for muito curto)
             if len(page_text.strip()) < 50:
                 try:
-                    # Aumentar resolução para melhor OCR
-                    zoom = 3  # Zoom 3x para melhor qualidade
+                    # Aumentar resolução (zoom 3x) para melhor OCR
+                    zoom = 3
                     mat = fitz.Matrix(zoom, zoom)
                     pix = page.get_pixmap(matrix=mat)
                     img_data = pix.tobytes("png")
                     
-                    # Processar imagem
                     img = Image.open(io.BytesIO(img_data))
+                    img = apply_image_enhancements(img)
                     
-                    # Melhorar contraste e nitidez
-                    from PIL import ImageEnhance, ImageFilter
-                    
-                    enhancer = ImageEnhance.Contrast(img)
-                    img = enhancer.enhance(2)
-                    img = img.filter(ImageFilter.SHARPEN)
-                    
-                    # OCR otimizado
-                    custom_config = r'--oem 3 --psm 6 -c preserve_interword_spaces=1'
-                    page_text = pytesseract.image_to_string(img, lang='por', config=custom_config)
-                    
+                    # Usar EasyOCR
+                    page_text = run_easyocr(img)
                 except Exception as e:
-                    st.warning(f"OCR falhou na página {page_num + 1}: {str(e)}")
+                    st.warning(f"OCR (EasyOCR) falhou na página {page_num + 1} de {pdf_file.name}: {str(e)}")
             
             full_text += page_text + "\n"
-        
+            
         pdf_document.close()
         return full_text
-        
+            
     except Exception as e:
-        st.error(f"Erro ao processar PDF: {str(e)}")
+        st.error(f"Erro crítico ao processar PDF {pdf_file.name}: {str(e)}")
         return None
 
 
 def extract_text_from_image(image_file):
-    """Extrai texto de imagem usando Tesseract OCR com pré-processamento"""
+    """Extrai texto de imagem usando EasyOCR com pré-processamento."""
+    if reader is None:
+        return None
+    
     try:
-        # Verificar se Tesseract está disponível
-        try:
-            pytesseract.get_tesseract_version()
-        except:
-            st.error("Tesseract OCR não está instalado. Verifique o arquivo packages.txt")
-            return None
-        
-        # Abrir e processar imagem
         image = Image.open(image_file)
         
-        # Converter para RGB se necessário
-        if image.mode != 'RGB':
-            image = image.convert('RGB')
+        # Aplicar pré-processamento (melhora a qualidade antes do OCR)
+        image = apply_image_enhancements(image)
         
-        # Aumentar contraste e nitidez
-        from PIL import ImageEnhance, ImageFilter
-        
-        # Aumentar resolução se imagem for pequena
-        width, height = image.size
-        if width < 2000:
-            scale = 2000 / width
-            new_size = (int(width * scale), int(height * scale))
-            image = image.resize(new_size, Image.LANCZOS)
-        
-        # Melhorar contraste
-        enhancer = ImageEnhance.Contrast(image)
-        image = enhancer.enhance(2)
-        
-        # Melhorar nitidez
-        image = image.filter(ImageFilter.SHARPEN)
-        
-        # Configuração otimizada do OCR
-        custom_config = r'--oem 3 --psm 6 -c preserve_interword_spaces=1'
-        
-        # Extrair texto
-        text = pytesseract.image_to_string(image, lang='por', config=custom_config)
+        # Executar EasyOCR
+        text = run_easyocr(image)
         
         return text
-        
+            
     except Exception as e:
-        st.error(f"Erro ao processar imagem: {str(e)}")
+        st.error(f"Erro ao processar imagem {image_file.name}: {str(e)}")
         return None
 
 
-# ==================== FUNÇÃO DE EXTRAÇÃO DE DADOS ====================
+# ==================== FUNÇÃO DE EXTRAÇÃO DE DADOS (REGEX) ====================
 
 def extract_medical_data(text):
-    """Extrai dados específicos do texto da guia médica"""
+    """Extrai dados específicos do texto da guia médica usando múltiplos padrões (Regex)."""
     
     data = {
         '1 - Registro ANS': '',
@@ -154,35 +153,30 @@ def extract_medical_data(text):
     if not text:
         return data
     
-    # Normalizar texto
+    # Normalizar texto (remover quebras de linha e espaços múltiplos)
     text = text.replace('\n', ' ')
     text = re.sub(r'\s+', ' ', text)
     
-    # ===== REGISTRO ANS =====
+    # --- PADRÕES DE BUSCA (ANS, do mais específico ao mais genérico) ---
     patterns_ans = [
         r'1\s*-\s*Registro\s+ANS[:\s]*(\d+)',
         r'Registro\s+ANS[:\s]*(\d+)',
         r'ANS[:\s]*[Nn]?[°º]?\s*(\d{6,})',
-        r'1.*?ANS.*?(\d{6,})',
         r'operadora.*?ANS.*?(\d{6,})',
     ]
-    
     for pattern in patterns_ans:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
-            data['1 - Registro ANS'] = match.group(1)
+            data['1 - Registro ANS'] = match.group(1).strip()
             break
-    
-    # ===== NÚMERO GUIA =====
+            
+    # --- PADRÕES DE BUSCA (NÚMERO GUIA) ---
     patterns_guia = [
         r'2\s*-\s*N[uú]mero\s+GUIA[:\s]*(\d+)',
         r'N[uú]mero\s+GUIA[:\s]*(\d+)',
         r'GUIA[:\s]*[Nn°º]?\s*(\d{5,})',
-        r'[Gg]uia[:\s]+(\d{5,})',
-        r'2.*?GUIA.*?(\d{5,})',
         r'n[°º]?\s*da\s+guia[:\s]*(\d{5,})',
     ]
-    
     for pattern in patterns_guia:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
@@ -190,30 +184,24 @@ def extract_medical_data(text):
             if len(numero) >= 5:
                 data['2 - Número GUIA'] = numero
                 break
-    
-    # ===== DATA DE AUTORIZAÇÃO =====
+            
+    # --- PADRÕES DE BUSCA (DATA DE AUTORIZAÇÃO) ---
     patterns_data = [
         r'4\s*-\s*Data\s+de\s+Autoriza[cç][aã]o[:\s]*(\d{2}/\d{2}/\d{4})',
         r'Data\s+de\s+Autoriza[cç][aã]o[:\s]*(\d{2}/\d{2}/\d{4})',
         r'Autoriza[cç][aã]o[:\s]*(\d{2}/\d{2}/\d{4})',
-        r'4.*?(\d{2}/\d{2}/\d{4})',
-        r'(\d{2}/\d{2}/\d{4})',
+        r'(\d{2}/\d{2}/\d{4})', # Padrão mais genérico
     ]
-    
     for pattern in patterns_data:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
             data['4 - Data de Autorização'] = match.group(1)
             break
-    
-    # ===== NOME =====
+            
+    # --- PADRÕES DE BUSCA (NOME) ---
     patterns_nome = [
         r'10\s*-\s*Nome[:\s]+([A-ZÀÁÂÃÇÉÊÍÓÔÕÚ][A-Za-zàáâãçéêíóôõúÀÁÂÃÇÉÊÍÓÔÕÚ\s]+?)(?:\s+\d{2}/|\s+CPF|\s+RG|\s+Cart|\s+\d{3}\.)',
-        r'10\s*-\s*Nome[:\s]+([A-ZÀÁÂÃÇÉÊÍÓÔÕÚ][^\d\n]{10,100}?)(?=\s*\d|\s*CPF|\s*RG|\s*Cart)',
-        r'10.*?Nome.*?([A-ZÀÁÂÃÇÉÊÍÓÔÕÚ][A-Za-zàáâãçéêíóôõúÀÁÂÃÇÉÊÍÓÔÕÚ\s]{10,80}?)(?:\s+CPF|\s+RG|\s+\d{2}/)',
-        r'Nome[:\s]+([A-ZÀÁÂÃÇÉÊÍÓÔÕÚ][A-Za-zàáâãçéêíóôõúÀÁÂÃÇÉÊÍÓÔÕÚ\s]{15,80}?)(?:\s+CPF|\s+RG|\s+\d{2}/)',
-        r'Benefici[aá]rio[:\s]+([A-ZÀÁÂÃÇÉÊÍÓÔÕÚ][A-Za-zàáâãçéêíóôõúÀÁÂÃÇÉÊÍÓÔÕÚ\s]{15,80}?)(?:\s+CPF|\s+RG)',
-        r'Paciente[:\s]+([A-ZÀÁÂÃÇÉÊÍÓÔÕÚ][A-Za-zàáâãçéêíóôõúÀÁÂÃÇÉÊÍÓÔÕÚ\s]{15,80}?)(?:\s+CPF|\s+RG)',
+        r'(?:Benefici[aá]rio|Paciente|Nome)[:\s]+([A-ZÀÁÂÃÇÉÊÍÓÔÕÚ][A-Za-zàáâãçéêíóôõúÀÁÂÃÇÉÊÍÓÔÕÚ\s]{15,80}?)(?:\s+CPF|\s+RG|\s+\d{2}/)',
     ]
     
     for pattern in patterns_nome:
@@ -221,39 +209,40 @@ def extract_medical_data(text):
         if match:
             nome = match.group(1).strip()
             nome = re.sub(r'\s+', ' ', nome)
-            nome = re.sub(r'[:\-]+$', '', nome).strip()
             
             palavras = nome.split()
             if len(palavras) >= 2 and all(len(p) > 1 for p in palavras):
                 data['10 - Nome'] = nome
                 break
-    
-    # ===== VALOR DA CONSULTA =====
+            
+    # --- PADRÕES DE BUSCA (VALOR DA CONSULTA) ---
     patterns_valor = [
-        r'R\$\s*(\d{1,3}(?:\.\d{3})*,\d{2})',
+        r'R\$\s*(\d{1,3}(?:\.\d{3})*,\d{2})', # Padrão R$ 1.234,56
         r'[Vv]alor[:\s]*R?\$?\s*(\d{1,3}(?:\.\d{3})*,\d{2})',
         r'[Tt]otal[:\s]*R?\$?\s*(\d{1,3}(?:\.\d{3})*,\d{2})',
         r'[Cc]onsulta[:\s]*R?\$?\s*(\d{1,3}(?:\.\d{3})*,\d{2})',
-        r'(\d{1,3}(?:\.\d{3})*,\d{2})',
     ]
-    
     for pattern in patterns_valor:
         match = re.search(pattern, text)
         if match:
             data['Valor da Consulta'] = match.group(1)
             break
-    
+            
     return data
 
 
 # ==================== INTERFACE DO USUÁRIO ====================
+
+if reader is None:
+    st.error("A aplicação não pode iniciar. EasyOCR Reader falhou ao carregar.")
+    st.stop()
 
 # Sidebar
 st.sidebar.header("📤 Upload de Arquivos")
 show_debug = st.sidebar.checkbox("🔍 Mostrar texto extraído (Debug)", value=False)
 
 uploaded_files = st.sidebar.file_uploader(
-    "Selecione arquivos PDF ou imagens",
+    "Selecione arquivos PDF ou imagens (JPG/PNG)",
     type=['pdf', 'png', 'jpg', 'jpeg'],
     accept_multiple_files=True,
     help="Arraste e solte seus arquivos aqui"
@@ -272,6 +261,9 @@ if uploaded_files:
     for idx, file in enumerate(uploaded_files):
         status_text.text(f"Processando: {file.name}")
         
+        # O EasyOCR processa o arquivo na memória, mas resetamos o ponteiro
+        file.seek(0)
+
         # Extrair texto
         if file.name.lower().endswith('.pdf'):
             text = extract_text_from_pdf(file)
@@ -308,7 +300,7 @@ if uploaded_files:
                     key=f"debug_{item['Arquivo']}"
                 )
     
-    # Criar DataFrame
+    # Criar DataFrame e permitir edição
     if results:
         df = pd.DataFrame(results)
         
@@ -323,8 +315,7 @@ if uploaded_files:
         ]
         df = df[column_order]
         
-        # Exibir dados extraídos
-        st.subheader("📋 Dados Extraídos")
+        st.subheader("📋 Dados Extraídos (Edite para Corrigir OCR)")
         
         edited_df = st.data_editor(
             df,
@@ -333,20 +324,20 @@ if uploaded_files:
             key="data_editor"
         )
         
-        # Estatísticas
+        # Estatísticas (Métricas)
         col1, col2, col3 = st.columns(3)
         
         with col1:
             st.metric("📁 Arquivos Processados", len(edited_df))
         
         with col2:
-            total_campos = len(edited_df) * 5  # 5 campos principais
+            total_campos = len(edited_df) * 5
             campos_preenchidos = 0
             for col in ['1 - Registro ANS', '2 - Número GUIA', '4 - Data de Autorização', '10 - Nome', 'Valor da Consulta']:
                 campos_preenchidos += edited_df[col].astype(str).str.strip().ne('').sum()
             
             taxa = (campos_preenchidos / total_campos * 100) if total_campos > 0 else 0
-            st.metric("📊 Taxa de Extração", f"{taxa:.1f}%")
+            st.metric("📊 Taxa de Preenchimento", f"{taxa:.1f}%")
         
         with col3:
             valores_count = edited_df['Valor da Consulta'].astype(str).str.strip().ne('').sum()
@@ -357,27 +348,27 @@ if uploaded_files:
         
         output = io.BytesIO()
         
+        # Usa xlsxwriter para formatação avançada
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             edited_df.to_excel(writer, index=False, sheet_name='Dados Médicos')
             
             workbook = writer.book
             worksheet = writer.sheets['Dados Médicos']
             
-            # Formato do cabeçalho
+            # Formatação do cabeçalho (cor alterada para diferenciar do Tesseract)
             header_format = workbook.add_format({
                 'bold': True,
                 'text_wrap': True,
                 'valign': 'center',
-                'fg_color': '#4CAF50',
+                'fg_color': '#1E88E5', # Azul
                 'font_color': '#FFFFFF',
                 'border': 1
             })
             
-            # Aplicar formato
+            # Aplicar formato e ajustar largura das colunas
             for col_num, value in enumerate(edited_df.columns.values):
                 worksheet.write(0, col_num, value, header_format)
                 
-                # Ajustar largura das colunas
                 max_length = max(
                     edited_df[value].astype(str).apply(len).max(),
                     len(str(value))
@@ -385,32 +376,21 @@ if uploaded_files:
                 worksheet.set_column(col_num, col_num, min(max_length, 50))
         
         excel_data = output.getvalue()
-        
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
         st.download_button(
-            label="📥 Baixar Planilha Excel",
+            label="📥 Baixar Planilha Excel (.xlsx)",
             data=excel_data,
-            file_name=f"guias_medicas_{timestamp}.xlsx",
+            file_name=f"guias_medicas_easyocr_{timestamp}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True
         )
         
-        # CSV alternativo
-        csv = edited_df.to_csv(index=False).encode('utf-8-sig')
-        st.download_button(
-            label="📄 Baixar CSV",
-            data=csv,
-            file_name=f"guias_medicas_{timestamp}.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
-    
     else:
-        st.warning("⚠️ Nenhum dado foi extraído. Verifique os arquivos e tente novamente.")
+        st.warning("⚠️ Nenhum dado foi extraído. Verifique os arquivos.")
 
 else:
-    # Tela inicial
+    # --- Tela inicial (instruções) ---
     st.info("👈 **Faça upload de arquivos na barra lateral para começar**")
     
     col1, col2 = st.columns(2)
@@ -418,46 +398,23 @@ else:
     with col1:
         st.markdown("### 📖 Como Usar")
         st.markdown("""
-        1. **Faça upload** de PDFs ou imagens (JPG/PNG)
-        2. **Aguarde** o processamento automático
-        3. **Revise** e edite os dados na tabela
-        4. **Baixe** a planilha Excel
-        
-        💡 **Dica:** Ative o modo debug para ver o texto extraído
+        1. **Faça upload** de PDFs ou imagens na barra lateral.
+        2. **Aguarde** o processamento (A primeira execução pode demorar mais, devido ao carregamento do modelo EasyOCR).
+        3. **Revise** e edite a tabela para corrigir erros do OCR.
+        4. **Baixe** a planilha Excel editada.
         """)
     
     with col2:
-        st.markdown("### ⚙️ Requisitos")
+        st.markdown("### ⚙️ Dicas de Qualidade")
         st.markdown("""
-        **Para melhor resultado:**
-        - ✅ Imagens com resolução mínima de 300 DPI
-        - ✅ Texto legível e bem contrastado
-        - ✅ PDFs nativos (não escaneados) funcionam melhor
-        - ✅ Arquivos individuais (uma guia por arquivo)
+        - O **EasyOCR** é uma excelente alternativa ao Tesseract, geralmente entregando maior precisão em textos manuscritos ou complexos.
+        - Ele utiliza um modelo de Machine Learning, sendo mais pesado para carregar, mas seu modelo é **cacheado** para execuções subsequentes.
+        - Mantenha a qualidade da imagem (acima de 300 DPI) para melhores resultados.
         """)
 
 # Rodapé
 st.sidebar.markdown("---")
-st.sidebar.markdown("### ℹ️ Informações")
 st.sidebar.info("""
-**Versão:** 3.0  
-**OCR Engine:** Tesseract  
-**PDF Engine:** PyMuPDF  
-
-Extrai automaticamente dados de guias médicas usando reconhecimento óptico de caracteres (OCR).
+**Engine:** **EasyOCR** (com PyTorch)
+**Vantagem:** Maior precisão em imagens complexas e menos dependência de bibliotecas de sistema operacional.
 """)
-
-# Instruções de instalação
-with st.sidebar.expander("📦 Instalação Local"):
-    st.code("""
-# Ubuntu/Debian
-sudo apt-get install tesseract-ocr tesseract-ocr-por
-pip install -r requirements.txt
-
-# macOS
-brew install tesseract tesseract-lang
-pip install -r requirements.txt
-
-# Executar
-streamlit run app.py
-    """, language="bash")
