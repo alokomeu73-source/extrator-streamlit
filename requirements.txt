@@ -1,18 +1,7 @@
-streamlit>=1.31.0
-pandas>=2.0.0
-pillow>=10.0.0
-PyMuPDF>=1.23.0
-xlsxwriter>=3.0.0
-openpyxl>=3.1.0
-numpy>=1.24.0
-
-# OCR - Escolha UMA das opções abaixo:
-
-# Opção 1: EasyOCR (melhor para PDFs escaneados, mas mais pesado)
-easyocr>=1.7.0
-torch>=2.0.0
-torchvision>=0.15.0
-opencv-python-headless>=4.8.0
-
-# Opção 2: Tesseract (mais leve, requer instalação do sistema)
-# pytesseract>=0.3.10
+streamlit==1.31.0
+pandas==2.0.0
+pillow==10.0.0
+pytesseract==0.3.10
+PyMuPDF==1.23.26
+xlsxwriter==3.2.0
+openpyxl==3.1.2
