@@ -6,6 +6,7 @@ from PIL import Image
 import numpy as np
 import fitz  # PyMuPDF
 from datetime import datetime
+import gc
 
 # Configuração da página
 st.set_page_config(
@@ -14,83 +15,150 @@ st.set_page_config(
     layout="wide"
 )
 
-# Variável global para armazenar o reader
+# Inicialização do session state
 if 'ocr_reader' not in st.session_state:
     st.session_state.ocr_reader = None
     st.session_state.ocr_loaded = False
 
 
-@st.cache_resource
+@st.cache_resource(show_spinner=False)
 def load_easyocr():
     """Carrega o modelo EasyOCR apenas uma vez e mantém em cache"""
-    import easyocr
-    reader = easyocr.Reader(['pt'], gpu=False, verbose=False)
-    return reader
+    try:
+        import easyocr
+        # Configuração otimizada para Streamlit Cloud
+        reader = easyocr.Reader(
+            ['pt'], 
+            gpu=False,
+            verbose=False,
+            download_enabled=True,
+            model_storage_directory=None,
+            detect_network='craft',
+            recog_network='standard'
+        )
+        return reader
+    except Exception as e:
+        st.error(f"Erro ao carregar EasyOCR: {str(e)}")
+        return None
 
 
 def extract_text_from_image(image):
     """Extrai texto de uma imagem usando EasyOCR"""
-    if st.session_state.ocr_reader is None:
-        with st.spinner("🔄 Carregando modelo OCR pela primeira vez... (isso pode levar alguns segundos)"):
-            st.session_state.ocr_reader = load_easyocr()
-            st.session_state.ocr_loaded = True
-    
-    # Converte PIL Image para numpy array
-    img_array = np.array(image)
-    
-    # Executa OCR
-    results = st.session_state.ocr_reader.readtext(img_array)
-    
-    # Concatena todos os textos extraídos
-    text = ' '.join([result[1] for result in results])
-    return text
+    try:
+        # Carrega o OCR se necessário
+        if st.session_state.ocr_reader is None:
+            with st.spinner("🔄 Inicializando modelo OCR... (pode levar 1-2 minutos na primeira vez)"):
+                st.session_state.ocr_reader = load_easyocr()
+                if st.session_state.ocr_reader is None:
+                    return ""
+                st.session_state.ocr_loaded = True
+        
+        # Redimensiona imagem se for muito grande
+        max_size = 2000
+        if max(image.size) > max_size:
+            ratio = max_size / max(image.size)
+            new_size = tuple([int(dim * ratio) for dim in image.size])
+            image = image.resize(new_size, Image.Resampling.LANCZOS)
+        
+        # Converte para RGB se necessário
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+        
+        # Converte PIL Image para numpy array
+        img_array = np.array(image)
+        
+        # Executa OCR com configurações otimizadas
+        results = st.session_state.ocr_reader.readtext(
+            img_array,
+            detail=0,  # Retorna apenas texto, sem coordenadas
+            paragraph=False,
+            batch_size=1
+        )
+        
+        # Concatena todos os textos extraídos
+        text = ' '.join(results) if results else ""
+        
+        # Libera memória
+        del img_array
+        gc.collect()
+        
+        return text
+        
+    except Exception as e:
+        st.error(f"Erro ao extrair texto da imagem: {str(e)}")
+        return ""
 
 
 def extract_text_from_pdf(pdf_file):
     """Extrai texto de um arquivo PDF usando PyMuPDF e OCR"""
-    pdf_bytes = pdf_file.read()
-    pdf_document = fitz.open(stream=pdf_bytes, filetype="pdf")
-    
-    full_text = ""
-    total_pages = len(pdf_document)
-    
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    for page_num in range(total_pages):
-        status_text.text(f"Processando página {page_num + 1} de {total_pages}...")
+    try:
+        pdf_bytes = pdf_file.read()
+        pdf_document = fitz.open(stream=pdf_bytes, filetype="pdf")
         
-        page = pdf_document[page_num]
+        full_text = ""
+        total_pages = len(pdf_document)
         
-        # Tenta extrair texto direto primeiro
-        page_text = page.get_text()
+        # Limita a 10 páginas para evitar timeout
+        max_pages = min(total_pages, 10)
+        if total_pages > max_pages:
+            st.warning(f"⚠️ PDF tem {total_pages} páginas. Processando apenas as primeiras {max_pages} páginas.")
         
-        # Se não houver texto, usa OCR
-        if not page_text.strip():
-            # Converte página para imagem com zoom 2x
-            mat = fitz.Matrix(2, 2)
-            pix = page.get_pixmap(matrix=mat)
-            img_data = pix.tobytes("png")
-            img = Image.open(io.BytesIO(img_data))
-            page_text = extract_text_from_image(img)
+        progress_bar = st.progress(0)
+        status_text = st.empty()
         
-        full_text += page_text + "\n"
-        progress_bar.progress((page_num + 1) / total_pages)
-    
-    pdf_document.close()
-    progress_bar.empty()
-    status_text.empty()
-    
-    return full_text
+        for page_num in range(max_pages):
+            status_text.text(f"📄 Processando página {page_num + 1} de {max_pages}...")
+            
+            try:
+                page = pdf_document[page_num]
+                
+                # Tenta extrair texto direto primeiro
+                page_text = page.get_text()
+                
+                # Se não houver texto suficiente, usa OCR
+                if len(page_text.strip()) < 50:
+                    # Converte página para imagem com zoom 2x
+                    mat = fitz.Matrix(2, 2)
+                    pix = page.get_pixmap(matrix=mat)
+                    img_data = pix.tobytes("png")
+                    img = Image.open(io.BytesIO(img_data))
+                    
+                    # Extrai texto via OCR
+                    page_text = extract_text_from_image(img)
+                    
+                    # Libera memória
+                    del pix, img_data, img
+                    gc.collect()
+                
+                full_text += page_text + "\n"
+                
+            except Exception as e:
+                st.warning(f"⚠️ Erro na página {page_num + 1}: {str(e)}")
+                continue
+            
+            progress_bar.progress((page_num + 1) / max_pages)
+        
+        pdf_document.close()
+        progress_bar.empty()
+        status_text.empty()
+        
+        return full_text
+        
+    except Exception as e:
+        st.error(f"Erro ao processar PDF: {str(e)}")
+        return ""
 
 
 def extract_fields_from_text(text, filename):
     """Extrai os campos específicos usando RegEx"""
     
-    # Remove quebras de linha e espaços extras para facilitar matching
+    if not text or len(text.strip()) < 10:
+        st.warning(f"⚠️ Pouco texto extraído de {filename}")
+    
+    # Remove quebras de linha e espaços extras
     text_clean = ' '.join(text.split())
     
-    # Dicionário para armazenar os campos extraídos
+    # Dicionário para armazenar os campos
     data = {
         'Arquivo': filename,
         '1 - Registro ANS': '',
@@ -99,11 +167,11 @@ def extract_fields_from_text(text, filename):
         '10 - Nome': ''
     }
     
-    # RegEx para Registro ANS (vários formatos possíveis)
+    # RegEx para Registro ANS
     ans_patterns = [
         r'(?:Registro\s+ANS|ANS)[:\s]*([0-9]{5,7})',
         r'(?:1\s*[-.\s]*Registro\s+ANS)[:\s]*([0-9]{5,7})',
-        r'(?:^|\s)([0-9]{6})(?:\s|$)',  # 6 dígitos isolados
+        r'(?:^|\s)([0-9]{6})(?:\s|$)',
     ]
     for pattern in ans_patterns:
         match = re.search(pattern, text_clean, re.IGNORECASE)
@@ -111,12 +179,12 @@ def extract_fields_from_text(text, filename):
             data['1 - Registro ANS'] = match.group(1).strip()
             break
     
-    # RegEx para Número da GUIA (vários formatos)
+    # RegEx para Número da GUIA
     guia_patterns = [
-        r'(?:N[úu]mero\s+(?:da\s+)?GUIA|GUIA)[:\s]*([0-9]{10,20})',
+        r'(?:N[úu]mero\s+(?:da\s+)?GUIA|GUIA\s+N)[:\s]*([0-9]{10,20})',
         r'(?:2\s*[-.\s]*N[úu]mero\s+GUIA)[:\s]*([0-9]{10,20})',
         r'(?:N[°º]\s*Guia)[:\s]*([0-9]{10,20})',
-        r'(?:GUIA\s*N[°º]?)[:\s]*([0-9]{10,20})',
+        r'(?:GUIA)[:\s]+([0-9]{10,20})',
     ]
     for pattern in guia_patterns:
         match = re.search(pattern, text_clean, re.IGNORECASE)
@@ -124,7 +192,7 @@ def extract_fields_from_text(text, filename):
             data['2 - Número GUIA'] = match.group(1).strip()
             break
     
-    # RegEx para Data de Autorização (formato DD/MM/YYYY ou DD-MM-YYYY)
+    # RegEx para Data de Autorização
     data_patterns = [
         r'(?:Data\s+(?:de\s+)?Autoriza[çc][ãa]o)[:\s]*([0-3]?[0-9][/-][0-1]?[0-9][/-][0-9]{4})',
         r'(?:4\s*[-.\s]*Data\s+(?:de\s+)?Autoriza[çc][ãa]o)[:\s]*([0-3]?[0-9][/-][0-1]?[0-9][/-][0-9]{4})',
@@ -136,44 +204,70 @@ def extract_fields_from_text(text, filename):
             data['4 - Data de Autorização'] = match.group(1).strip().replace('-', '/')
             break
     
-    # RegEx para Nome (campo 10)
+    # RegEx para Nome
     nome_patterns = [
-        r'(?:10\s*[-.\s]*Nome)[:\s]*([A-ZÀÁÂÃÄÅÇÈÉÊËÌÍÎÏÑÒÓÔÕÖÙÚÛÜ\s]{3,50})',
-        r'(?:Nome\s+(?:do\s+)?(?:Benefici[áa]rio|Paciente))[:\s]*([A-ZÀÁÂÃÄÅÇÈÉÊËÌÍÎÏÑÒÓÔÕÖÙÚÛÜ\s]{3,50})',
-        r'(?:Benefici[áa]rio)[:\s]*([A-ZÀÁÂÃÄÅÇÈÉÊËÌÍÎÏÑÒÓÔÕÖÙÚÛÜ\s]{3,50})',
+        r'(?:10\s*[-.\s]*Nome)[:\s]*([A-ZÀÁÂÃÄÅÇÈÉÊËÌÍÎÏÑÒÓÔÕÖÙÚÛÜ][A-ZÀÁÂÃÄÅÇÈÉÊËÌÍÎÏÑÒÓÔÕÖÙÚÛÜ\s]{2,50})',
+        r'(?:Nome\s+(?:do\s+)?(?:Benefici[áa]rio|Paciente))[:\s]*([A-ZÀÁÂÃÄÅÇÈÉÊËÌÍÎÏÑÒÓÔÕÖÙÚÛÜ][A-ZÀÁÂÃÄÅÇÈÉÊËÌÍÎÏÑÒÓÔÕÖÙÚÛÜ\s]{2,50})',
+        r'(?:Benefici[áa]rio)[:\s]*([A-ZÀÁÂÃÄÅÇÈÉÊËÌÍÎÏÑÒÓÔÕÖÙÚÛÜ][A-ZÀÁÂÃÄÅÇÈÉÊËÌÍÎÏÑÒÓÔÕÖÙÚÛÜ\s]{2,50})',
     ]
     for pattern in nome_patterns:
         match = re.search(pattern, text_clean, re.IGNORECASE)
         if match:
             nome_raw = match.group(1).strip()
-            # Remove números e caracteres especiais do nome
-            nome_clean = re.sub(r'[0-9\-/:]', '', nome_raw).strip()
-            data['10 - Nome'] = nome_clean
-            break
+            # Remove números e caracteres especiais
+            nome_clean = re.sub(r'[0-9\-/:.]+', '', nome_raw).strip()
+            # Remove espaços extras
+            nome_clean = ' '.join(nome_clean.split())
+            if len(nome_clean) >= 3:
+                data['10 - Nome'] = nome_clean
+                break
     
     return data
 
 
 def process_image_file(image_file):
     """Processa um arquivo de imagem"""
-    img = Image.open(image_file)
-    
-    # Converte para RGB se necessário
-    if img.mode != 'RGB':
-        img = img.convert('RGB')
-    
-    with st.spinner(f"🔍 Extraindo texto de {image_file.name}..."):
-        text = extract_text_from_image(img)
-    
-    return extract_fields_from_text(text, image_file.name)
+    try:
+        img = Image.open(image_file)
+        
+        with st.spinner(f"🔍 Extraindo texto de {image_file.name}..."):
+            text = extract_text_from_image(img)
+        
+        if not text:
+            st.warning(f"⚠️ Nenhum texto foi extraído de {image_file.name}")
+        
+        return extract_fields_from_text(text, image_file.name)
+        
+    except Exception as e:
+        st.error(f"❌ Erro ao processar {image_file.name}: {str(e)}")
+        return {
+            'Arquivo': image_file.name,
+            '1 - Registro ANS': 'ERRO',
+            '2 - Número GUIA': 'ERRO',
+            '4 - Data de Autorização': 'ERRO',
+            '10 - Nome': 'ERRO'
+        }
 
 
 def process_pdf_file(pdf_file):
     """Processa um arquivo PDF"""
-    with st.spinner(f"📄 Processando PDF {pdf_file.name}..."):
+    try:
         text = extract_text_from_pdf(pdf_file)
-    
-    return extract_fields_from_text(text, pdf_file.name)
+        
+        if not text:
+            st.warning(f"⚠️ Nenhum texto foi extraído de {pdf_file.name}")
+        
+        return extract_fields_from_text(text, pdf_file.name)
+        
+    except Exception as e:
+        st.error(f"❌ Erro ao processar {pdf_file.name}: {str(e)}")
+        return {
+            'Arquivo': pdf_file.name,
+            '1 - Registro ANS': 'ERRO',
+            '2 - Número GUIA': 'ERRO',
+            '4 - Data de Autorização': 'ERRO',
+            '10 - Nome': 'ERRO'
+        }
 
 
 def convert_df_to_excel(df):
@@ -195,7 +289,19 @@ Este aplicativo extrai automaticamente informações de guias médicas em format
 - 2 - Número GUIA  
 - 4 - Data de Autorização
 - 10 - Nome
+
+**💡 Dica:** A primeira execução pode levar 1-2 minutos para baixar os modelos de OCR.
 """)
+
+# Informações importantes
+with st.expander("ℹ️ Informações Importantes"):
+    st.write("""
+    - **PDFs:** Máximo de 10 páginas por arquivo
+    - **Imagens:** Formatos aceitos: PNG, JPG, JPEG
+    - **Tamanho:** Recomendado até 5MB por arquivo
+    - **Qualidade:** Quanto melhor a qualidade da imagem, melhor a extração
+    - **Tempo:** Primeiro processamento pode demorar mais (download de modelos)
+    """)
 
 st.divider()
 
@@ -210,38 +316,55 @@ uploaded_files = st.file_uploader(
 if uploaded_files:
     st.success(f"✅ {len(uploaded_files)} arquivo(s) carregado(s)")
     
-    if st.button("🚀 Processar Arquivos", type="primary", use_container_width=True):
-        results = []
-        
-        # Processa cada arquivo
-        for idx, file in enumerate(uploaded_files):
-            st.write(f"**Processando {idx + 1}/{len(uploaded_files)}: {file.name}**")
+    # Limita o número de arquivos
+    if len(uploaded_files) > 20:
+        st.error("❌ Limite de 20 arquivos por vez. Por favor, reduza a quantidade.")
+    else:
+        if st.button("🚀 Processar Arquivos", type="primary", use_container_width=True):
+            results = []
             
-            try:
-                if file.type == "application/pdf":
-                    data = process_pdf_file(file)
-                else:
-                    data = process_image_file(file)
+            # Barra de progresso geral
+            overall_progress = st.progress(0)
+            
+            # Processa cada arquivo
+            for idx, file in enumerate(uploaded_files):
+                st.write(f"**Processando {idx + 1}/{len(uploaded_files)}: {file.name}**")
                 
-                results.append(data)
-                st.success(f"✓ {file.name} processado com sucesso!")
+                try:
+                    if file.type == "application/pdf":
+                        data = process_pdf_file(file)
+                    else:
+                        data = process_image_file(file)
+                    
+                    results.append(data)
+                    
+                    # Verifica se extraiu pelo menos um campo
+                    campos_extraidos = sum(1 for k, v in data.items() if k != 'Arquivo' and v and v != 'ERRO')
+                    if campos_extraidos > 0:
+                        st.success(f"✓ {file.name} - {campos_extraidos} campo(s) extraído(s)")
+                    else:
+                        st.warning(f"⚠️ {file.name} - Nenhum campo extraído")
+                    
+                except Exception as e:
+                    st.error(f"❌ Erro crítico em {file.name}: {str(e)}")
+                    results.append({
+                        'Arquivo': file.name,
+                        '1 - Registro ANS': 'ERRO',
+                        '2 - Número GUIA': 'ERRO',
+                        '4 - Data de Autorização': 'ERRO',
+                        '10 - Nome': 'ERRO'
+                    })
                 
-            except Exception as e:
-                st.error(f"❌ Erro ao processar {file.name}: {str(e)}")
-                # Adiciona linha vazia em caso de erro
-                results.append({
-                    'Arquivo': file.name,
-                    '1 - Registro ANS': 'ERRO',
-                    '2 - Número GUIA': 'ERRO',
-                    '4 - Data de Autorização': 'ERRO',
-                    '10 - Nome': 'ERRO'
-                })
-        
-        # Cria DataFrame
-        if results:
-            df = pd.DataFrame(results)
-            st.session_state.df_results = df
-            st.success("🎉 Processamento concluído!")
+                overall_progress.progress((idx + 1) / len(uploaded_files))
+            
+            overall_progress.empty()
+            
+            # Cria DataFrame
+            if results:
+                df = pd.DataFrame(results)
+                st.session_state.df_results = df
+                st.balloons()
+                st.success("🎉 Processamento concluído!")
 
 # Exibe e permite edição dos resultados
 if 'df_results' in st.session_state:
@@ -286,15 +409,15 @@ if 'df_results' in st.session_state:
     with col1:
         st.metric("Total de Guias", len(edited_df))
     with col2:
-        ans_preenchidos = edited_df['1 - Registro ANS'].astype(str).str.strip().ne('').sum()
-        st.metric("ANS Extraídos", ans_preenchidos)
+        ans_preenchidos = edited_df['1 - Registro ANS'].astype(str).str.strip().ne('').ne('ERRO').sum()
+        st.metric("ANS Extraídos", f"{ans_preenchidos}/{len(edited_df)}")
     with col3:
-        guia_preenchidos = edited_df['2 - Número GUIA'].astype(str).str.strip().ne('').sum()
-        st.metric("GUIA Extraídos", guia_preenchidos)
+        guia_preenchidos = edited_df['2 - Número GUIA'].astype(str).str.strip().ne('').ne('ERRO').sum()
+        st.metric("GUIA Extraídos", f"{guia_preenchidos}/{len(edited_df)}")
     with col4:
-        nome_preenchidos = edited_df['10 - Nome'].astype(str).str.strip().ne('').sum()
-        st.metric("Nomes Extraídos", nome_preenchidos)
+        nome_preenchidos = edited_df['10 - Nome'].astype(str).str.strip().ne('').ne('ERRO').sum()
+        st.metric("Nomes Extraídos", f"{nome_preenchidos}/{len(edited_df)}")
 
 # Rodapé
 st.divider()
-st.caption("🔒 Os arquivos são processados localmente e não são armazenados no servidor")
+st.caption("🔒 Os arquivos são processados na nuvem e não são armazenados após o processamento")
