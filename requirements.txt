@@ -5,6 +5,7 @@ Pillow
 PyMuPDF
 xlsxwriter
 easyocr
+numpy # Adicionado para corrigir o erro de tipo de entrada do EasyOCR
 # Dependências do PyTorch são necessárias para o EasyOCR
 torch>=1.7.1
 torchvision
