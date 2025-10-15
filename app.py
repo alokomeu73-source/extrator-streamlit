@@ -311,7 +311,11 @@ if not EASYOCR_AVAILABLE and not TESSERACT_AVAILABLE:
 # Processamento principal
 if uploaded_files:
     st.subheader(f"📊 Processando {len(uploaded_files)} arquivo(s)...")
-    st.info("⏳ EasyOCR pode levar alguns segundos no primeiro uso...")
+    
+    if EASYOCR_AVAILABLE and reader:
+        st.info("✅ Usando EasyOCR")
+    elif TESSERACT_AVAILABLE:
+        st.info("✅ Usando Tesseract OCR")
     
     results = []
     debug_texts = []
