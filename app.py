@@ -352,9 +352,14 @@ st.sidebar.markdown("---")
 st.sidebar.markdown("### ℹ️ Sobre")
 st.sidebar.info("Aplicativo de OCR para extração automática de dados de guias médicas usando Tesseract e PyMuPDF.")
 st.sidebar.markdown("**Versão:** 2.0 | **Motor OCR:** Tesseract")
-            if len(nome.split()) >= 2:  # Pelo menos nome e sobrenome
-                info['10 - Nome'] = nome
-                break
+          # Limpar nome
+nome = re.sub(r'\s{2,}', ' ', nome)
+# Remover caracteres indesejados do final
+nome = re.sub(r'[:\-–—]+$', '', nome).strip()
+if len(nome.split()) >= 2:  # Pelo menos nome e sobrenome
+    info['10 - Nome'] = nome
+    break
+
     
     # === EXTRAÇÃO DE VALOR ===
     valor_patterns = [
@@ -526,5 +531,6 @@ st.sidebar.markdown("---")
 st.sidebar.markdown("### ℹ️ Sobre")
 st.sidebar.info("Aplicativo de OCR para extração automática de dados de guias médicas usando Tesseract e PyMuPDF.")
 st.sidebar.markdown("**Versão:** 2.0 | **Motor OCR:** Tesseract")
+
 
 
