@@ -5,13 +5,13 @@ import easyocr
 import re
 import pandas as pd
 from io import BytesIO
-from PIL import Image, ImageEnhance, ImageFilter # Necessário para pré-processamento
-import numpy as np # ESSENCIAL para o EasyOCR
+from PIL import Image, ImageEnhance, ImageFilter
+import numpy as np
 
 # --- Configurações ---
 st.set_page_config(page_title="Leitor de PDFs Médicos 🩺", layout="wide")
 
-st.title("📄 Extração Rápida de Guias Médicas (Inicialização Otimizada)")
+st.title("📄 Extração Rápida de Guias Médicas (Estrutura Corrigida)")
 st.markdown("Otimizado para carregar a interface instantaneamente. O modelo de OCR só será carregado após o envio do primeiro arquivo.")
 
 # --- Inicialização do OCR (carrega uma vez, com feedback) ---
@@ -22,29 +22,22 @@ def load_ocr():
     with st.spinner("⏳ Carregando o modelo de OCR (pode levar 1-2 minutos na primeira execução)..."):
         return easyocr.Reader(["pt", "en"], gpu=False)
 
-# A linha 'reader = load_ocr()' NÃO está aqui. O modelo será carregado APENAS quando necessário.
-
 # --- Pré-processamento de Imagem (ajuda na precisão com zoom menor) ---
 def apply_image_enhancements(img):
     """Aplica melhorias de contraste e nitidez na imagem antes do OCR."""
     if img.mode != 'RGB':
         img = img.convert('RGB')
         
-    # Aumentar contraste
     enhancer = ImageEnhance.Contrast(img)
-    img = enhancer.enhance(1.5) # Aumento moderado
-    # Aumentar nitidez
+    img = enhancer.enhance(1.5)
     img = img.filter(ImageFilter.SHARPEN)
     
     return img
 
 # --- Função para extrair texto híbrido (OCR + digital) ---
-# Esta função assume que a variável 'reader' está no escopo global quando chamada.
-def extract_text_from_pdf(file):
+def extract_text_from_pdf(file, reader):
     """Extrai texto do PDF (digital) e usa OCR apenas em páginas de imagem."""
     text_content = ""
-    
-    # Reinicia o ponteiro do arquivo
     file.seek(0)
 
     try:
@@ -60,11 +53,9 @@ def extract_text_from_pdf(file):
                     # 2. Se a página for vazia (escaneada), usa OCR
                     st.toast(f"Página {page_num + 1} de {doc.page_count}: Executando OCR...")
                     
-                    # OTIMIZAÇÃO: Zoom 2x para otimização de velocidade
                     zoom = 2
                     pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom)) 
                     
-                    # Converte para PIL Image e aplica melhorias
                     img_bytes = BytesIO(pix.tobytes("png"))
                     img = Image.open(img_bytes)
                     img = apply_image_enhancements(img)
@@ -72,12 +63,11 @@ def extract_text_from_pdf(file):
                     # CRÍTICO: Converter para NumPy array para estabilidade do EasyOCR
                     img_array = np.array(img)
 
-                    # Chamada ao reader (que deve estar carregado no escopo global)
                     ocr_result = reader.readtext(img_array, detail=0, paragraph=True)
                     text_content += "\n".join(ocr_result) + "\n"
     
     except Exception as e:
-        st.error(f"Erro ao processar PDF: {e}")
+        # st.error(f"Erro ao processar PDF: {e}") # Evita erro de Streamlit na extração
         return None
 
     return text_content.strip()
@@ -96,7 +86,6 @@ def extract_info(text):
     if not text:
         return data
     
-    # Normalizar texto (remover quebras de linha e espaços múltiplos)
     text = text.replace('\n', ' ')
     text = re.sub(r'\s+', ' ', text)
     
@@ -129,15 +118,8 @@ def extract_info(text):
 # --- Upload dos arquivos ---
 uploaded_files = st.file_uploader("Envie um ou mais PDFs 📎", type=["pdf"], accept_multiple_files=True)
 
-# =======================================================
-# AÇÃO CHAVE: INICIALIZAÇÃO CONDICIONAL
-# =======================================================
-
 if uploaded_files:
-    # Chama load_ocr() APENAS QUANDO há arquivos.
-    # Se o modelo já estiver no cache, é quase instantâneo.
-    # Se o modelo for novo (primeira vez), o spinner em load_ocr aparecerá.
-    global reader
+    # 1. CARREGA O MODELO DE OCR (se já não estiver em cache)
     reader = load_ocr() 
     
     if reader is None:
@@ -146,15 +128,22 @@ if uploaded_files:
 
     all_data = []
     
+    # Lista temporária para armazenar o texto extraído para exibição posterior
+    file_contents = {} 
+    
+    # 2. EXECUTA O PROCESSAMENTO NO BLOCO ST.STATUS
     with st.status("Preparando o ambiente e processando PDFs...", expanded=True) as status:
         
         for file_index, file in enumerate(uploaded_files):
             status.update(label=f"Processando arquivo {file_index + 1}/{len(uploaded_files)}: **{file.name}**")
             
             # Extrair texto
-            text = extract_text_from_pdf(file)
+            text = extract_text_from_pdf(file, reader)
             
             if text:
+                # Armazena o conteúdo para o expander fora do status
+                file_contents[file.name] = text 
+                
                 # Extrair informações
                 info = extract_info(text)
                 info["Arquivo"] = file.name
@@ -162,34 +151,37 @@ if uploaded_files:
             else:
                 st.warning(f"Não foi possível extrair texto de {file.name}")
 
-            with st.expander(f"📘 Texto extraído de {file.name}", expanded=False):
-                st.text_area("Conteúdo detectado (máx. 5000 caracteres):", text[:5000], height=200, key=f"text_area_{file_index}")
-
         status.update(label="✅ Extração concluída! Revisando dados.", state="complete", expanded=False)
 
     
+    # 3. EXIBE OS RESULTADOS (FORA DO ST.STATUS)
     if all_data:
         df = pd.DataFrame(all_data)
         st.success("✅ Extração de dados finalizada! Revise a tabela abaixo.")
 
+        # --- Exibe o Expander Agora (fora do st.status) ---
+        st.subheader("Conteúdo Extraído por Arquivo")
+        for filename, text in file_contents.items():
+             # O st.expander agora está aqui, fora do st.status, resolvendo o erro!
+             with st.expander(f"📘 Texto extraído de {filename}", expanded=False):
+                st.text_area("Conteúdo detectado:", text[:5000], height=200, key=f"text_area_{filename}")
+        
+        # --- Exibe a Tabela ---
         column_order = ['Arquivo', '1 - Registro ANS', '2 - Número GUIA', '4 - Data de Autorização', '10 - Nome', 'Valor da Consulta']
         if all(col in df.columns for col in column_order):
              df = df[column_order]
 
-        st.subheader("📋 Dados Extraídos (Edite para Corrigir OCR)")
+        st.subheader("📋 Tabela de Dados (Edite para Corrigir OCR)")
         edited_df = st.data_editor(df, use_container_width=True, num_rows="dynamic")
 
         csv = edited_df.to_csv(index=False).encode("utf-8")
         st.download_button("💾 Baixar resultado (.csv)", csv, "dados_extraidos.csv", "text/csv")
     
 else:
-    # Mensagem de boas-vindas rápida, pois o modelo ainda não está carregado.
     st.info("Envie um ou mais arquivos PDF para começar.")
     st.markdown("""
         ---
-        ### 🚀 Otimizações Aplicadas:
-        **O carregamento inicial do aplicativo agora é instantâneo.** O modelo de OCR (que causa o *timeout*) só será carregado **após o primeiro arquivo ser enviado**.
-        
-        1.  **Inicialização Condicional:** O PyTorch e o EasyOCR só são inicializados sob demanda.
-        2.  **Zoom Reduzido:** OCR usa zoom 2x (4x mais rápido que 3x) para documentos escaneados.
+        ### 🚀 Status da Aplicação:
+        * **Problema Resolvido:** O erro de estrutura (`StreamlitAPIException`) foi corrigido.
+        * **Otimização:** O modelo de OCR só será carregado **após o primeiro arquivo ser enviado**, garantindo um início rápido.
         """)
