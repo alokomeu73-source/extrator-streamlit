@@ -1,12 +1,33 @@
 import streamlit as st
 import pandas as pd
-import fitz  # PyMuPDF
-import easyocr
-import numpy as np
-from PIL import Image
 import io
 import re
 from datetime import datetime
+
+# Verificar dependências críticas no início
+try:
+    import numpy as np
+except ImportError:
+    st.error("❌ NumPy não está instalado. Verifique o requirements.txt")
+    st.stop()
+
+try:
+    import fitz  # PyMuPDF
+except ImportError:
+    st.error("❌ PyMuPDF não está instalado. Verifique o requirements.txt")
+    st.stop()
+
+try:
+    from PIL import Image
+except ImportError:
+    st.error("❌ Pillow não está instalado. Verifique o requirements.txt")
+    st.stop()
+
+try:
+    import easyocr
+except ImportError:
+    st.error("❌ EasyOCR não está instalado. Verifique o requirements.txt")
+    st.stop()
 
 # Configuração da página
 st.set_page_config(
