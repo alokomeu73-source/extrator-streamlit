@@ -55,13 +55,29 @@ def extract_text_from_pdf(pdf_file):
             page = pdf_document[page_num]
             page_text = page.get_text()
             
-            # Se texto direto for muito curto, fazer OCR
+            # Se texto direto for muito curto, fazer OCR com melhor qualidade
             if len(page_text.strip()) < 50:
                 try:
-                    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+                    # Aumentar resolução para melhor OCR
+                    zoom = 3  # Zoom 3x para melhor qualidade
+                    mat = fitz.Matrix(zoom, zoom)
+                    pix = page.get_pixmap(matrix=mat)
                     img_data = pix.tobytes("png")
+                    
+                    # Processar imagem
                     img = Image.open(io.BytesIO(img_data))
-                    page_text = pytesseract.image_to_string(img, lang='por')
+                    
+                    # Melhorar contraste e nitidez
+                    from PIL import ImageEnhance, ImageFilter
+                    
+                    enhancer = ImageEnhance.Contrast(img)
+                    img = enhancer.enhance(2)
+                    img = img.filter(ImageFilter.SHARPEN)
+                    
+                    # OCR otimizado
+                    custom_config = r'--oem 3 --psm 6 -c preserve_interword_spaces=1'
+                    page_text = pytesseract.image_to_string(img, lang='por', config=custom_config)
+                    
                 except Exception as e:
                     st.warning(f"OCR falhou na página {page_num + 1}: {str(e)}")
             
@@ -76,7 +92,7 @@ def extract_text_from_pdf(pdf_file):
 
 
 def extract_text_from_image(image_file):
-    """Extrai texto de imagem usando Tesseract OCR"""
+    """Extrai texto de imagem usando Tesseract OCR com pré-processamento"""
     try:
         # Verificar se Tesseract está disponível
         try:
@@ -85,9 +101,36 @@ def extract_text_from_image(image_file):
             st.error("Tesseract OCR não está instalado. Verifique o arquivo packages.txt")
             return None
         
+        # Abrir e processar imagem
         image = Image.open(image_file)
-        config = r'--oem 3 --psm 6'
-        text = pytesseract.image_to_string(image, lang='por', config=config)
+        
+        # Converter para RGB se necessário
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+        
+        # Aumentar contraste e nitidez
+        from PIL import ImageEnhance, ImageFilter
+        
+        # Aumentar resolução se imagem for pequena
+        width, height = image.size
+        if width < 2000:
+            scale = 2000 / width
+            new_size = (int(width * scale), int(height * scale))
+            image = image.resize(new_size, Image.LANCZOS)
+        
+        # Melhorar contraste
+        enhancer = ImageEnhance.Contrast(image)
+        image = enhancer.enhance(2)
+        
+        # Melhorar nitidez
+        image = image.filter(ImageFilter.SHARPEN)
+        
+        # Configuração otimizada do OCR
+        custom_config = r'--oem 3 --psm 6 -c preserve_interword_spaces=1'
+        
+        # Extrair texto
+        text = pytesseract.image_to_string(image, lang='por', config=custom_config)
+        
         return text
         
     except Exception as e:
@@ -119,7 +162,9 @@ def extract_medical_data(text):
     patterns_ans = [
         r'1\s*-\s*Registro\s+ANS[:\s]*(\d+)',
         r'Registro\s+ANS[:\s]*(\d+)',
-        r'ANS[:\s]*(\d{6,})',
+        r'ANS[:\s]*[Nn]?[°º]?\s*(\d{6,})',
+        r'1.*?ANS.*?(\d{6,})',
+        r'operadora.*?ANS.*?(\d{6,})',
     ]
     
     for pattern in patterns_ans:
@@ -134,6 +179,8 @@ def extract_medical_data(text):
         r'N[uú]mero\s+GUIA[:\s]*(\d+)',
         r'GUIA[:\s]*[Nn°º]?\s*(\d{5,})',
         r'[Gg]uia[:\s]+(\d{5,})',
+        r'2.*?GUIA.*?(\d{5,})',
+        r'n[°º]?\s*da\s+guia[:\s]*(\d{5,})',
     ]
     
     for pattern in patterns_guia:
@@ -149,6 +196,7 @@ def extract_medical_data(text):
         r'4\s*-\s*Data\s+de\s+Autoriza[cç][aã]o[:\s]*(\d{2}/\d{2}/\d{4})',
         r'Data\s+de\s+Autoriza[cç][aã]o[:\s]*(\d{2}/\d{2}/\d{4})',
         r'Autoriza[cç][aã]o[:\s]*(\d{2}/\d{2}/\d{4})',
+        r'4.*?(\d{2}/\d{2}/\d{4})',
         r'(\d{2}/\d{2}/\d{4})',
     ]
     
@@ -160,10 +208,12 @@ def extract_medical_data(text):
     
     # ===== NOME =====
     patterns_nome = [
-        r'10\s*-\s*Nome[:\s]+([A-Z][A-Za-z\s]+?)(?:\s+\d{2}/|\s+CPF|\s+RG|\s+\d{3}\.)',
-        r'10\s*-\s*Nome[:\s]+([A-Z][^\d\n]{10,80}?)(?=\s*\d|\s*CPF)',
-        r'Nome[:\s]+([A-Z][A-Za-z\s]{15,80}?)(?:\s+CPF|\s+RG|\s+\d{2}/)',
-        r'Benefici[aá]rio[:\s]+([A-Z][A-Za-z\s]{15,80}?)(?:\s+CPF|\s+RG)',
+        r'10\s*-\s*Nome[:\s]+([A-ZÀÁÂÃÇÉÊÍÓÔÕÚ][A-Za-zàáâãçéêíóôõúÀÁÂÃÇÉÊÍÓÔÕÚ\s]+?)(?:\s+\d{2}/|\s+CPF|\s+RG|\s+Cart|\s+\d{3}\.)',
+        r'10\s*-\s*Nome[:\s]+([A-ZÀÁÂÃÇÉÊÍÓÔÕÚ][^\d\n]{10,100}?)(?=\s*\d|\s*CPF|\s*RG|\s*Cart)',
+        r'10.*?Nome.*?([A-ZÀÁÂÃÇÉÊÍÓÔÕÚ][A-Za-zàáâãçéêíóôõúÀÁÂÃÇÉÊÍÓÔÕÚ\s]{10,80}?)(?:\s+CPF|\s+RG|\s+\d{2}/)',
+        r'Nome[:\s]+([A-ZÀÁÂÃÇÉÊÍÓÔÕÚ][A-Za-zàáâãçéêíóôõúÀÁÂÃÇÉÊÍÓÔÕÚ\s]{15,80}?)(?:\s+CPF|\s+RG|\s+\d{2}/)',
+        r'Benefici[aá]rio[:\s]+([A-ZÀÁÂÃÇÉÊÍÓÔÕÚ][A-Za-zàáâãçéêíóôõúÀÁÂÃÇÉÊÍÓÔÕÚ\s]{15,80}?)(?:\s+CPF|\s+RG)',
+        r'Paciente[:\s]+([A-ZÀÁÂÃÇÉÊÍÓÔÕÚ][A-Za-zàáâãçéêíóôõúÀÁÂÃÇÉÊÍÓÔÕÚ\s]{15,80}?)(?:\s+CPF|\s+RG)',
     ]
     
     for pattern in patterns_nome:
@@ -183,6 +233,7 @@ def extract_medical_data(text):
         r'R\$\s*(\d{1,3}(?:\.\d{3})*,\d{2})',
         r'[Vv]alor[:\s]*R?\$?\s*(\d{1,3}(?:\.\d{3})*,\d{2})',
         r'[Tt]otal[:\s]*R?\$?\s*(\d{1,3}(?:\.\d{3})*,\d{2})',
+        r'[Cc]onsulta[:\s]*R?\$?\s*(\d{1,3}(?:\.\d{3})*,\d{2})',
         r'(\d{1,3}(?:\.\d{3})*,\d{2})',
     ]
     
