@@ -1,11 +1,11 @@
-# requirements.txt
-streamlit
-pandas
-Pillow
-PyMuPDF
-xlsxwriter
-numpy
-# Versões fixas para maior compatibilidade com EasyOCR em ambientes de nuvem (Streamlit)
-easyocr==1.7.1
-torch==2.0.1
-torchvision==0.15.2
+streamlit>=1.31.0
+pandas>=2.0.0
+pillow>=10.0.0
+easyocr>=1.7.0
+PyMuPDF>=1.23.0
+xlsxwriter>=3.0.0
+openpyxl>=3.1.0
+numpy>=1.24.0
+opencv-python-headless>=4.8.0
+torch>=2.0.0
+torchvision>=0.15.0
