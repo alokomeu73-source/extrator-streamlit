@@ -148,11 +148,11 @@ def extract_information(text):
     
     # === EXTRAÇÃO DE NÚMERO GUIA ===
     guia_patterns = [
-        r'2\s*[-–—]\s*N[úu]mero\s+GUIA[:\s]*(\d+[\d\s.-]*\d+)',
-        r'N[úu]mero\s+GUIA[:\s]*(\d+[\d\s.-]*\d+)',
-        r'GUIA[:\s]*[Nn]?[°º]?\s*(\d+[\d\s.-]*\d+)',
-        r'(?:n[úuº°]?\.?\s*(?:da\s+)?guia|guia\s+n[úuº°]?\.?)[:\s]*(\d[\d\s.-]{5,})',
-        r'guia[:\s]*[n°º]?[:\s]*(\d[\d\s.-]{5,})'
+        r'2\s*[-–—]\s*N[úu]mero\s+GUIA[:\s]*(\d+[\d\s.\-]*\d+)',
+        r'N[úu]mero\s+GUIA[:\s]*(\d+[\d\s.\-]*\d+)',
+        r'GUIA[:\s]*[Nn]?[°º]?\s*(\d+[\d\s.\-]*\d+)',
+        r'(?:n[úuº°]?\.?\s*(?:da\s+)?guia|guia\s+n[úuº°]?\.?)[:\s]*(\d[\d\s.\-]{5,})',
+        r'guia[:\s]*[n°º]?[:\s]*(\d[\d\s.\-]{5,})'
     ]
     for pattern in guia_patterns:
         match = re.search(pattern, text_normalized, re.IGNORECASE)
@@ -164,12 +164,12 @@ def extract_information(text):
     
     # === EXTRAÇÃO DE DATA DE AUTORIZAÇÃO ===
     data_patterns = [
-        r'4\s*[-–—]\s*Data\s+de\s+Autoriza[çc][ãa]o[:\s]*(\d{2}[/.-]\d{2}[/.-]\d{4})',
-        r'Data\s+de\s+Autoriza[çc][ãa]o[:\s]*(\d{2}[/.-]\d{2}[/.-]\d{4})',
-        r'Autoriza[çc][ãa]o[:\s]*(\d{2}[/.-]\d{2}[/.-]\d{4})',
-        r'data.*?autoriza[çc][ãa]o.*?[:\s]?(\d{2}[/.-]\d{2}[/.-]\d{4})',
-        r'(?:em|realizado.*?em)[:\s]+(\d{2}[/.-]\d{2}[/.-]\d{4})',
-        r'\b(\d{2}[/.-]\d{2}[/.-]\d{4})\b'
+        r'4\s*[-–—]\s*Data\s+de\s+Autoriza[çc][ãa]o[:\s]*(\d{2}[/.\-]\d{2}[/.\-]\d{4})',
+        r'Data\s+de\s+Autoriza[çc][ãa]o[:\s]*(\d{2}[/.\-]\d{2}[/.\-]\d{4})',
+        r'Autoriza[çc][ãa]o[:\s]*(\d{2}[/.\-]\d{2}[/.\-]\d{4})',
+        r'data.*?autoriza[çc][ãa]o.*?[:\s]?(\d{2}[/.\-]\d{2}[/.\-]\d{4})',
+        r'(?:em|realizado.*?em)[:\s]+(\d{2}[/.\-]\d{2}[/.\-]\d{4})',
+        r'\b(\d{2}[/.\-]\d{2}[/.\-]\d{4})\b'
     ]
     for pattern in data_patterns:
         match = re.search(pattern, text_normalized, re.IGNORECASE | re.DOTALL)
@@ -179,10 +179,10 @@ def extract_information(text):
     
     # === EXTRAÇÃO DE NOME (Campo 10) ===
     nome_patterns = [
-        r'10\s*[-–—]\s*Nome[:\s]+([A-ZÀÁÂÃÇÉÊÍÓÔÕÚ][A-Za-zàáâãçéêíóôõúÀÁÂÃÇÉÊÍÓÔÕÚ\s]{3,100}?)(?:\s+\d{2}[/.-]\d{2}|\s+CPF|\s+RG|\s+Carteira|\s+Cart\.|\s+\n|$)',
+        r'10\s*[-–—]\s*Nome[:\s]+([A-ZÀÁÂÃÇÉÊÍÓÔÕÚ][A-Za-zàáâãçéêíóôõúÀÁÂÃÇÉÊÍÓÔÕÚ\s]{3,100}?)(?:\s+\d{2}[/.\-]\d{2}|\s+CPF|\s+RG|\s+Carteira|\s+Cart\.|\s+\n|$)',
         r'10\s*[-–—]\s*Nome[:\s]+([A-ZÀÁÂÃÇÉÊÍÓÔÕÚ][^\n\d]{10,80}?)(?=\s*\d|\s*CPF|\s*RG|\n|$)',
-        r'Nome[:\s]+([A-ZÀÁÂÃÇÉÊÍÓÔÕÚ][A-Za-zàáâãçéêíóôõúÀÁÂÃÇÉÊÍÓÔÕÚ\s]{10,80}?)(?:\s+CPF|\s+RG|\s+\d{2}[/.-]|\s+Carteira|\n)',
-        r'(?:Benefici[áa]rio|Paciente)[:\s]+([A-ZÀÁÂÃÇÉÊÍÓÔÕÚ][A-Za-zàáâãçéêíóôõúÀÁÂÃÇÉÊÍÓÔÕÚ\s]{10,80}?)(?:\s+CPF|\s+RG|\s+\d{2}[/.-]|\n)'
+        r'Nome[:\s]+([A-ZÀÁÂÃÇÉÊÍÓÔÕÚ][A-Za-zàáâãçéêíóôõúÀÁÂÃÇÉÊÍÓÔÕÚ\s]{10,80}?)(?:\s+CPF|\s+RG|\s+\d{2}[/.\-]|\s+Carteira|\n)',
+        r'(?:Benefici[áa]rio|Paciente)[:\s]+([A-ZÀÁÂÃÇÉÊÍÓÔÕÚ][A-Za-zàáâãçéêíóôõúÀÁÂÃÇÉÊÍÓÔÕÚ\s]{10,80}?)(?:\s+CPF|\s+RG|\s+\d{2}[/.\-]|\n)'
     ]
     for pattern in nome_patterns:
         match = re.search(pattern, text_normalized, re.IGNORECASE)
