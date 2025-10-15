@@ -6,11 +6,8 @@ xlsxwriter>=3.0.0
 openpyxl>=3.1.0
 numpy>=1.24.0
 
-# OCR - Escolha UMA das opções abaixo:
-
-# Opção 1: EasyOCR (melhor para PDFs escaneados, mas mais pesado)
+# OCR Engine
 easyocr>=1.7.0
 torch>=2.0.0
 torchvision>=0.15.0
 opencv-python-headless>=4.8.0
-
