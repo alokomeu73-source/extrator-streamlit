@@ -4,8 +4,8 @@ pandas
 Pillow
 PyMuPDF
 xlsxwriter
-easyocr
-numpy 
-# Dependências do PyTorch são necessárias para o EasyOCR (versão compatível)
-torch>=1.7.1
-torchvision
+numpy
+# Versões fixas para maior compatibilidade com EasyOCR em ambientes de nuvem (Streamlit)
+easyocr==1.7.1
+torch==2.0.1
+torchvision==0.15.2
