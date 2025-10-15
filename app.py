@@ -5,6 +5,7 @@ import io
 import re
 from datetime import datetime
 import numpy as np
+import sys
 
 # Importar EasyOCR
 try:
@@ -12,7 +13,16 @@ try:
     EASYOCR_AVAILABLE = True
 except ImportError:
     EASYOCR_AVAILABLE = False
-    st.error("EasyOCR não está instalado. Instale com: pip install easyocr")
+
+# Importar Tesseract como fallback
+try:
+    import pytesseract
+    import os
+    if os.path.exists('/usr/bin/tesseract'):
+        pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
+    TESSERACT_AVAILABLE = True
+except ImportError:
+    TESSERACT_AVAILABLE = False
 
 # Importar PyMuPDF
 try:
@@ -29,6 +39,15 @@ st.set_page_config(
 )
 
 st.title("🏥 Extração de Dados de Guias Médicas")
+
+# Mostrar status do OCR
+if EASYOCR_AVAILABLE:
+    st.success("✅ EasyOCR disponível")
+elif TESSERACT_AVAILABLE:
+    st.warning("⚠️ Usando Tesseract OCR (EasyOCR não disponível)")
+else:
+    st.error("❌ Nenhum OCR disponível")
+
 st.markdown("""
 Extrai automaticamente as seguintes informações de guias médicas:
 - **1 - Registro ANS**
@@ -43,10 +62,20 @@ Extrai automaticamente as seguintes informações de guias médicas:
 def load_ocr_reader():
     """Carrega o leitor EasyOCR (cached para não recarregar)"""
     if EASYOCR_AVAILABLE:
-        return easyocr.Reader(['pt'], gpu=False)
+        try:
+            with st.spinner('🔄 Carregando EasyOCR pela primeira vez... Isso pode levar alguns minutos.'):
+                return easyocr.Reader(['pt'], gpu=False, verbose=False)
+        except Exception as e:
+            st.error(f"Erro ao carregar EasyOCR: {str(e)}")
+            return None
     return None
 
-reader = load_ocr_reader()
+# Tentar carregar o reader
+if EASYOCR_AVAILABLE:
+    with st.spinner('⏳ Inicializando EasyOCR...'):
+        reader = load_ocr_reader()
+else:
+    reader = None
 
 # ==================== FUNÇÕES DE EXTRAÇÃO DE TEXTO ====================
 
@@ -99,32 +128,37 @@ def extract_text_from_pdf(pdf_file):
 
 
 def extract_text_from_image(image_file):
-    """Extrai texto de imagem usando EasyOCR"""
-    if not reader:
-        st.error("EasyOCR não está disponível")
-        return None
+    """Extrai texto de imagem usando EasyOCR ou Tesseract"""
     
-    try:
-        # Carregar imagem
-        img = Image.open(image_file)
-        img_array = np.array(img)
-        
-        # Usar EasyOCR
-        result = reader.readtext(img_array, paragraph=True)
-        
-        # Concatenar texto extraído
-        full_text = ""
-        for detection in result:
-            text = detection[1]
-            full_text += text + " "
-        
-        return full_text
-        
-    except Exception as e:
-        st.error(f"Erro ao processar imagem: {str(e)}")
-        import traceback
-        st.error(traceback.format_exc())
-        return None
+    # Tentar EasyOCR primeiro
+    if reader:
+        try:
+            img = Image.open(image_file)
+            img_array = np.array(img)
+            
+            result = reader.readtext(img_array, paragraph=True)
+            
+            full_text = ""
+            for detection in result:
+                text = detection[1]
+                full_text += text + " "
+            
+            return full_text
+        except Exception as e:
+            st.warning(f"EasyOCR falhou, tentando Tesseract: {str(e)}")
+    
+    # Fallback para Tesseract
+    if TESSERACT_AVAILABLE:
+        try:
+            img = Image.open(image_file)
+            text = pytesseract.image_to_string(img, lang='por')
+            return text
+        except Exception as e:
+            st.error(f"Tesseract também falhou: {str(e)}")
+            return None
+    
+    st.error("Nenhum OCR disponível")
+    return None
 
 
 # ==================== FUNÇÃO DE EXTRAÇÃO DE DADOS ====================
@@ -250,19 +284,38 @@ uploaded_files = st.sidebar.file_uploader(
     help="Arraste e solte seus arquivos aqui"
 )
 
-# Verificar se EasyOCR está disponível
-if not EASYOCR_AVAILABLE:
-    st.error("⚠️ EasyOCR não está instalado. Instale com: `pip install easyocr`")
-    st.stop()
-
-if not reader:
-    st.error("⚠️ Não foi possível carregar o EasyOCR")
+# Verificar se algum OCR está disponível
+if not EASYOCR_AVAILABLE and not TESSERACT_AVAILABLE:
+    st.error("⚠️ Nenhum OCR está instalado!")
+    st.info("""
+    **Instale um dos seguintes:**
+    
+    **Opção 1 - EasyOCR (Recomendado para PDFs escaneados):**
+    ```
+    pip install easyocr
+    ```
+    
+    **Opção 2 - Tesseract (Mais leve):**
+    ```
+    # Ubuntu/Debian
+    sudo apt-get install tesseract-ocr tesseract-ocr-por
+    pip install pytesseract
+    
+    # macOS
+    brew install tesseract tesseract-lang
+    pip install pytesseract
+    ```
+    """)
     st.stop()
 
 # Processamento principal
 if uploaded_files:
     st.subheader(f"📊 Processando {len(uploaded_files)} arquivo(s)...")
-    st.info("⏳ EasyOCR pode levar alguns segundos no primeiro uso...")
+    
+    if EASYOCR_AVAILABLE and reader:
+        st.info("✅ Usando EasyOCR")
+    elif TESSERACT_AVAILABLE:
+        st.info("✅ Usando Tesseract OCR")
     
     results = []
     debug_texts = []
