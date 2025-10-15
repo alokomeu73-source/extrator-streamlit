@@ -5,10 +5,21 @@ from PIL import Image, ImageEnhance, ImageFilter
 import io
 import re
 from datetime import datetime
-import numpy as np # Necessário para a conversão de imagem para array
+import numpy as np 
 
 # --- Importar EasyOCR e PyTorch (necessários) ---
-import easyocr
+try:
+    import easyocr
+    import torch
+    
+    # Verifica se o PyTorch foi importado corretamente
+    if not hasattr(torch, '__version__'):
+        st.error("Erro: PyTorch não foi inicializado corretamente. Verifique o seu requirements.txt.")
+        st.stop()
+        
+except ImportError:
+    st.error("Erro: A biblioteca EasyOCR ou suas dependências (torch) não estão instaladas corretamente. Verifique o requirements.txt.")
+    st.stop()
 
 # --- Importar PyMuPDF (fitz) para PDFs ---
 try:
@@ -26,24 +37,29 @@ st.set_page_config(
 
 st.title("🏥 Extração de Dados de Guias Médicas (EasyOCR)")
 st.markdown("""
-Esta ferramenta utiliza **EasyOCR** e pré-processamento de imagem para extrair as informações
-das Guias: **Registro ANS**, **Número GUIA**, **Data de Autorização**, **Nome do Paciente** e **Valor da Consulta**.
+Esta ferramenta utiliza **EasyOCR** para extrair as seguintes informações:
+- **1 - Registro ANS**
+- **2 - Número GUIA**
+- **4 - Data de Autorização**
+- **10 - Nome**
+- **Valor da Consulta**
 """)
 
 # ==================== INICIALIZAÇÃO E CACHE DO EASYOCR READER ====================
 
 @st.cache_resource
 def load_easyocr_reader():
-    """Carrega o modelo do EasyOCR para o idioma Português (pt)."""
+    """Carrega o modelo do EasyOCR (com cache) para o idioma Português (pt)."""
     try:
         # Usamos gpu=False para garantir compatibilidade e estabilidade no Streamlit Cloud
+        # O modelo é carregado UMA ÚNICA VEZ devido ao @st.cache_resource
         reader = easyocr.Reader(['pt'], gpu=False)
         return reader
     except Exception as e:
-        st.error(f"Erro Crítico ao carregar o EasyOCR: {e}. Verifique se o PyTorch (torch) está instalado corretamente.")
+        st.error(f"Erro ao carregar o EasyOCR: {e}. Verifique as dependências (torch) e reinicie a aplicação.")
         return None
 
-# Carrega o leitor (caching garante que isso só ocorra uma vez)
+# Carrega o leitor (inicia o processo de cache)
 reader = load_easyocr_reader()
 
 # ==================== FUNÇÕES DE EXTRAÇÃO DE TEXTO ====================
@@ -53,8 +69,10 @@ def apply_image_enhancements(img):
     if img.mode != 'RGB':
         img = img.convert('RGB')
         
+    # Aumentar contraste
     enhancer = ImageEnhance.Contrast(img)
     img = enhancer.enhance(2)
+    # Aumentar nitidez
     img = img.filter(ImageFilter.SHARPEN)
     
     return img
@@ -68,27 +86,28 @@ def run_easyocr(image):
         return ""
 
     try:
-        # CORREÇÃO: Converter a imagem PIL (Pillow) para um NumPy array, que é o formato
-        # esperado pelo EasyOCR, evitando o erro "Invalid input type".
+        # CORREÇÃO: Converter a imagem PIL (Pillow) para um NumPy array (necessário pelo EasyOCR)
         img_array = np.array(image)
         
         # readtext retorna apenas o texto, eliminando caixas delimitadoras e confiança
-        results = reader.readtext(img_array, detail=0) 
+        # paragraph=True tenta juntar linhas relacionadas, o que é bom para documentos
+        results = reader.readtext(img_array, detail=0, paragraph=True) 
         
         # Juntar todo o texto extraído em uma única string
         full_text = " ".join(results)
         return full_text
     except Exception as e:
-        st.error(f"EasyOCR falhou durante a execução: {str(e)}")
+        st.warning(f"EasyOCR falhou durante a execução. Tentando extração de texto direto. Erro: {str(e)}")
         return ""
 
 def extract_text_from_pdf(pdf_file):
     """Extrai texto de PDF nativo ou usa EasyOCR se for escaneado."""
     if not PYMUPDF_AVAILABLE:
-        st.error("PyMuPDF não está instalado para processar PDFs.")
         return None
     
     try:
+        # Permite que o arquivo seja lido novamente
+        pdf_file.seek(0)
         pdf_bytes = pdf_file.read()
         pdf_document = fitz.open(stream=pdf_bytes, filetype="pdf")
         full_text = ""
@@ -104,9 +123,9 @@ def extract_text_from_pdf(pdf_file):
                     zoom = 3
                     mat = fitz.Matrix(zoom, zoom)
                     pix = page.get_pixmap(matrix=mat)
-                    img_data = pix.tobytes("png")
                     
-                    img = Image.open(io.BytesIO(img_data))
+                    # Converte o pixmap para imagem PIL para pré-processamento
+                    img = Image.open(io.BytesIO(pix.tobytes("png")))
                     img = apply_image_enhancements(img)
                     
                     # Usar EasyOCR
@@ -126,8 +145,6 @@ def extract_text_from_pdf(pdf_file):
 
 def extract_text_from_image(image_file):
     """Extrai texto de imagem usando EasyOCR com pré-processamento."""
-    if reader is None:
-        return None
     
     try:
         image = Image.open(image_file)
@@ -198,7 +215,7 @@ def extract_medical_data(text):
         r'4\s*-\s*Data\s+de\s+Autoriza[cç][aã]o[:\s]*(\d{2}/\d{2}/\d{4})',
         r'Data\s+de\s+Autoriza[cç][aã]o[:\s]*(\d{2}/\d{2}/\d{4})',
         r'Autoriza[cç][aã]o[:\s]*(\d{2}/\d{2}/\d{4})',
-        r'(\d{2}/\d{2}/\d{4})', # Padrão mais genérico
+        r'(\d{2}/\d{2}/\d{4})', 
     ]
     for pattern in patterns_data:
         match = re.search(pattern, text, re.IGNORECASE)
@@ -225,7 +242,7 @@ def extract_medical_data(text):
             
     # --- PADRÕES DE BUSCA (VALOR DA CONSULTA) ---
     patterns_valor = [
-        r'R\$\s*(\d{1,3}(?:\.\d{3})*,\d{2})', # Padrão R$ 1.234,56
+        r'R\$\s*(\d{1,3}(?:\.\d{3})*,\d{2})', 
         r'[Vv]alor[:\s]*R?\$?\s*(\d{1,3}(?:\.\d{3})*,\d{2})',
         r'[Tt]otal[:\s]*R?\$?\s*(\d{1,3}(?:\.\d{3})*,\d{2})',
         r'[Cc]onsulta[:\s]*R?\$?\s*(\d{1,3}(?:\.\d{3})*,\d{2})',
@@ -242,7 +259,7 @@ def extract_medical_data(text):
 # ==================== INTERFACE DO USUÁRIO ====================
 
 if reader is None:
-    st.error("A aplicação não pode iniciar. EasyOCR Reader falhou ao carregar.")
+    st.error("A aplicação não pode rodar o OCR. Por favor, verifique os logs de instalação para o PyTorch.")
     st.stop()
 
 # Sidebar
@@ -269,7 +286,7 @@ if uploaded_files:
     for idx, file in enumerate(uploaded_files):
         status_text.text(f"Processando: {file.name}")
         
-        # O EasyOCR processa o arquivo na memória, mas resetamos o ponteiro
+        # Reiniciar o ponteiro do arquivo para garantir que a leitura comece do início
         file.seek(0)
 
         # Extrair texto
@@ -368,7 +385,7 @@ if uploaded_files:
                 'bold': True,
                 'text_wrap': True,
                 'valign': 'center',
-                'fg_color': '#1E88E5', # Azul
+                'fg_color': '#1E88E5', 
                 'font_color': '#FFFFFF',
                 'border': 1
             })
@@ -413,16 +430,16 @@ else:
         """)
     
     with col2:
-        st.markdown("### ⚙️ Dicas de Qualidade")
+        st.markdown("### ⚙️ Dicas de Estabilidade")
         st.markdown("""
-        - O **EasyOCR** é uma excelente alternativa ao Tesseract, geralmente entregando maior precisão em textos manuscritos ou complexos.
-        - Ele utiliza um modelo de Machine Learning, sendo mais pesado para carregar, mas seu modelo é **cacheado** para execuções subsequentes.
-        - Mantenha a qualidade da imagem (acima de 300 DPI) para melhores resultados.
+        - O **EasyOCR** utiliza o PyTorch. Se houver falha na inicialização (`503` ou carregamento infinito), o problema é de **dependência/recurso**.
+        - Use o `requirements.txt` com as versões fixas para aumentar a chance de sucesso.
+        - Se o erro persistir, **reinicie o build** do seu app Streamlit para forçar a nova instalação.
         """)
 
 # Rodapé
 st.sidebar.markdown("---")
 st.sidebar.info("""
 **Engine:** **EasyOCR** (com PyTorch)
-**Vantagem:** Maior precisão em imagens complexas e menos dependência de bibliotecas de sistema operacional.
+**Status:** Versão otimizada com cache para estabilidade.
 """)
