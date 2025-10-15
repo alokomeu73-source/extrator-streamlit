@@ -6,33 +6,31 @@ import io
 import re
 from datetime import datetime
 import os
-import sys
 
-# Configurar caminho do Tesseract para diferentes ambientes
+# Configurar caminho do Tesseract
 if os.path.exists('/usr/bin/tesseract'):
     pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
 elif os.path.exists('/usr/local/bin/tesseract'):
     pytesseract.pytesseract.tesseract_cmd = '/usr/local/bin/tesseract'
 
-# Importação condicional do PyMuPDF
+# Importar PyMuPDF
 try:
-    import fitz  # PyMuPDF
+    import fitz
     PYMUPDF_AVAILABLE = True
 except ImportError:
     PYMUPDF_AVAILABLE = False
-    st.warning("⚠️ PyMuPDF não está disponível. Instale com: pip install PyMuPDF")
+    st.warning("PyMuPDF não disponível. Apenas imagens serão processadas.")
 
-# Configuração da página
+# ==================== CONFIGURAÇÃO DA PÁGINA ====================
 st.set_page_config(
     page_title="Extração de Dados Médicos - OCR",
     page_icon="🏥",
     layout="wide"
 )
 
-# Título e descrição
 st.title("🏥 Extração de Dados de Guias Médicas")
 st.markdown("""
-Este aplicativo extrai automaticamente informações de guias médicas usando OCR:
+Extrai automaticamente as seguintes informações de guias médicas:
 - **1 - Registro ANS**
 - **2 - Número GUIA**
 - **4 - Data de Autorização**
@@ -40,86 +38,69 @@ Este aplicativo extrai automaticamente informações de guias médicas usando OC
 - **Valor da Consulta**
 """)
 
-# Função para extrair texto de PDF (com OCR se necessário)
+# ==================== FUNÇÕES DE EXTRAÇÃO DE TEXTO ====================
+
 def extract_text_from_pdf(pdf_file):
+    """Extrai texto de arquivo PDF usando PyMuPDF e OCR quando necessário"""
     if not PYMUPDF_AVAILABLE:
-        st.error("❌ PyMuPDF não está instalado. Instale com: pip install PyMuPDF")
+        st.error("PyMuPDF não está instalado")
         return None
     
     try:
-        # Verificar se Tesseract está disponível para OCR
-        tesseract_available = True
-        try:
-            pytesseract.get_tesseract_version()
-        except:
-            tesseract_available = False
-            st.warning("⚠️ Tesseract não disponível. PDFs escaneados podem não funcionar.")
-        
         pdf_bytes = pdf_file.read()
         pdf_document = fitz.open(stream=pdf_bytes, filetype="pdf")
-        text = ""
+        full_text = ""
         
         for page_num in range(pdf_document.page_count):
             page = pdf_document[page_num]
-            
-            # Tentar extrair texto direto
             page_text = page.get_text()
             
-            # Se não houver texto ou texto muito curto, fazer OCR da imagem
-            if tesseract_available and len(page_text.strip()) < 50:
-                # Converter página para imagem
-                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 2x zoom para melhor qualidade
-                img_data = pix.tobytes("png")
-                img = Image.open(io.BytesIO(img_data))
-                
-                # Fazer OCR
+            # Se texto direto for muito curto, fazer OCR
+            if len(page_text.strip()) < 50:
                 try:
+                    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+                    img_data = pix.tobytes("png")
+                    img = Image.open(io.BytesIO(img_data))
                     page_text = pytesseract.image_to_string(img, lang='por')
-                except:
-                    pass  # Manter texto original se OCR falhar
+                except Exception as e:
+                    st.warning(f"OCR falhou na página {page_num + 1}: {str(e)}")
             
-            text += page_text + "\n"
+            full_text += page_text + "\n"
         
         pdf_document.close()
-        return text
+        return full_text
+        
     except Exception as e:
         st.error(f"Erro ao processar PDF: {str(e)}")
         return None
 
-# Função para extrair texto de imagem
+
 def extract_text_from_image(image_file):
+    """Extrai texto de imagem usando Tesseract OCR"""
     try:
         # Verificar se Tesseract está disponível
         try:
             pytesseract.get_tesseract_version()
-        except Exception as e:
-            st.error("❌ Tesseract OCR não está instalado. Verifique o arquivo packages.txt")
-            st.info("""
-            **Para executar localmente:**
-            - Ubuntu/Debian: `sudo apt-get install tesseract-ocr tesseract-ocr-por`
-            - macOS: `brew install tesseract tesseract-lang`
-            - Windows: Baixe em https://github.com/UB-Mannheim/tesseract/wiki
-            
-            **Para Streamlit Cloud:**
-            - Certifique-se de que o arquivo `packages.txt` existe com o conteúdo correto
-            """)
+        except:
+            st.error("Tesseract OCR não está instalado. Verifique o arquivo packages.txt")
             return None
         
         image = Image.open(image_file)
-        # Configurar OCR com opções para melhor resultado
-        custom_config = r'--oem 3 --psm 6'
-        text = pytesseract.image_to_string(image, lang='por', config=custom_config)
+        config = r'--oem 3 --psm 6'
+        text = pytesseract.image_to_string(image, lang='por', config=config)
         return text
-    except pytesseract.TesseractNotFoundError:
-        st.error("❌ Tesseract não encontrado no sistema")
-        return None
+        
     except Exception as e:
         st.error(f"Erro ao processar imagem: {str(e)}")
         return None
 
-# Função para extrair informações usando regex (melhorada)
-def extract_information(text):
-    info = {
+
+# ==================== FUNÇÃO DE EXTRAÇÃO DE DADOS ====================
+
+def extract_medical_data(text):
+    """Extrai dados específicos do texto da guia médica"""
+    
+    data = {
         '1 - Registro ANS': '',
         '2 - Número GUIA': '',
         '4 - Data de Autorização': '',
@@ -128,272 +109,111 @@ def extract_information(text):
     }
     
     if not text:
-        return info
+        return data
     
     # Normalizar texto
-    text_normalized = text.replace('\n', ' ').replace('  ', ' ')
+    text = text.replace('\n', ' ')
+    text = re.sub(r'\s+', ' ', text)
     
-    # === EXTRAÇÃO DE REGISTRO ANS ===
-    ans_patterns = [
-        r'1\s*[-–—]\s*Registro\s+ANS[:\s]*(\d+)',
+    # ===== REGISTRO ANS =====
+    patterns_ans = [
+        r'1\s*-\s*Registro\s+ANS[:\s]*(\d+)',
         r'Registro\s+ANS[:\s]*(\d+)',
-        r'ANS[:\s]*[Nn]?[°º]?\s*(\d{5,})',
-        r'(?:Operadora|Registro).*?ANS[:\s]*(\d{5,})'
+        r'ANS[:\s]*(\d{6,})',
     ]
-    for pattern in ans_patterns:
-        match = re.search(pattern, text_normalized, re.IGNORECASE)
+    
+    for pattern in patterns_ans:
+        match = re.search(pattern, text, re.IGNORECASE)
         if match:
-            info['1 - Registro ANS'] = match.group(1)
+            data['1 - Registro ANS'] = match.group(1)
             break
     
-    # === EXTRAÇÃO DE NÚMERO GUIA ===
-    guia_patterns = [
-        r'2\s*[-–—]\s*N[úu]mero\s+GUIA[:\s]*(\d+[\d\s.\-]*\d+)',
-        r'N[úu]mero\s+GUIA[:\s]*(\d+[\d\s.\-]*\d+)',
-        r'GUIA[:\s]*[Nn]?[°º]?\s*(\d+[\d\s.\-]*\d+)',
-        r'(?:n[úuº°]?\.?\s*(?:da\s+)?guia|guia\s+n[úuº°]?\.?)[:\s]*(\d[\d\s.\-]{5,})',
-        r'guia[:\s]*[n°º]?[:\s]*(\d[\d\s.\-]{5,})'
+    # ===== NÚMERO GUIA =====
+    patterns_guia = [
+        r'2\s*-\s*N[uú]mero\s+GUIA[:\s]*(\d+)',
+        r'N[uú]mero\s+GUIA[:\s]*(\d+)',
+        r'GUIA[:\s]*[Nn°º]?\s*(\d{5,})',
+        r'[Gg]uia[:\s]+(\d{5,})',
     ]
-    for pattern in guia_patterns:
-        match = re.search(pattern, text_normalized, re.IGNORECASE)
+    
+    for pattern in patterns_guia:
+        match = re.search(pattern, text, re.IGNORECASE)
         if match:
-            numero = re.sub(r'[^\d]', '', match.group(1))
-            if len(numero) >= 4:
-                info['2 - Número GUIA'] = numero
+            numero = re.sub(r'\D', '', match.group(1))
+            if len(numero) >= 5:
+                data['2 - Número GUIA'] = numero
                 break
     
-    # === EXTRAÇÃO DE DATA DE AUTORIZAÇÃO ===
-    data_patterns = [
-        r'4\s*[-–—]\s*Data\s+de\s+Autoriza[çc][ãa]o[:\s]*(\d{2}[/.\-]\d{2}[/.\-]\d{4})',
-        r'Data\s+de\s+Autoriza[çc][ãa]o[:\s]*(\d{2}[/.\-]\d{2}[/.\-]\d{4})',
-        r'Autoriza[çc][ãa]o[:\s]*(\d{2}[/.\-]\d{2}[/.\-]\d{4})',
-        r'data.*?autoriza[çc][ãa]o.*?[:\s]?(\d{2}[/.\-]\d{2}[/.\-]\d{4})',
-        r'(?:em|realizado.*?em)[:\s]+(\d{2}[/.\-]\d{2}[/.\-]\d{4})',
-        r'\b(\d{2}[/.\-]\d{2}[/.\-]\d{4})\b'
+    # ===== DATA DE AUTORIZAÇÃO =====
+    patterns_data = [
+        r'4\s*-\s*Data\s+de\s+Autoriza[cç][aã]o[:\s]*(\d{2}/\d{2}/\d{4})',
+        r'Data\s+de\s+Autoriza[cç][aã]o[:\s]*(\d{2}/\d{2}/\d{4})',
+        r'Autoriza[cç][aã]o[:\s]*(\d{2}/\d{2}/\d{4})',
+        r'(\d{2}/\d{2}/\d{4})',
     ]
-    for pattern in data_patterns:
-        match = re.search(pattern, text_normalized, re.IGNORECASE | re.DOTALL)
+    
+    for pattern in patterns_data:
+        match = re.search(pattern, text, re.IGNORECASE)
         if match:
-            info['4 - Data de Autorização'] = match.group(1).replace('.', '/').replace('-', '/')
+            data['4 - Data de Autorização'] = match.group(1)
             break
     
-    # === EXTRAÇÃO DE NOME (Campo 10) ===
-    nome_patterns = [
-        r'10\s*[-–—]\s*Nome[:\s]+([A-ZÀÁÂÃÇÉÊÍÓÔÕÚ][A-Za-zàáâãçéêíóôõúÀÁÂÃÇÉÊÍÓÔÕÚ\s]{3,100}?)(?:\s+\d{2}[/.\-]\d{2}|\s+CPF|\s+RG|\s+Carteira|\s+Cart\.|\s+\n|$)',
-        r'10\s*[-–—]\s*Nome[:\s]+([A-ZÀÁÂÃÇÉÊÍÓÔÕÚ][^\n\d]{10,80}?)(?=\s*\d|\s*CPF|\s*RG|\n|$)',
-        r'Nome[:\s]+([A-ZÀÁÂÃÇÉÊÍÓÔÕÚ][A-Za-zàáâãçéêíóôõúÀÁÂÃÇÉÊÍÓÔÕÚ\s]{10,80}?)(?:\s+CPF|\s+RG|\s+\d{2}[/.\-]|\s+Carteira|\n)',
-        r'(?:Benefici[áa]rio|Paciente)[:\s]+([A-ZÀÁÂÃÇÉÊÍÓÔÕÚ][A-Za-zàáâãçéêíóôõúÀÁÂÃÇÉÊÍÓÔÕÚ\s]{10,80}?)(?:\s+CPF|\s+RG|\s+\d{2}[/.\-]|\n)'
+    # ===== NOME =====
+    patterns_nome = [
+        r'10\s*-\s*Nome[:\s]+([A-Z][A-Za-z\s]+?)(?:\s+\d{2}/|\s+CPF|\s+RG|\s+\d{3}\.)',
+        r'10\s*-\s*Nome[:\s]+([A-Z][^\d\n]{10,80}?)(?=\s*\d|\s*CPF)',
+        r'Nome[:\s]+([A-Z][A-Za-z\s]{15,80}?)(?:\s+CPF|\s+RG|\s+\d{2}/)',
+        r'Benefici[aá]rio[:\s]+([A-Z][A-Za-z\s]{15,80}?)(?:\s+CPF|\s+RG)',
     ]
-    for pattern in nome_patterns:
-        match = re.search(pattern, text_normalized, re.IGNORECASE)
+    
+    for pattern in patterns_nome:
+        match = re.search(pattern, text)
         if match:
             nome = match.group(1).strip()
-            # Limpar nome
-            nome = re.sub(r'\s{2,}', ' ', nome)
-            # Remover caracteres indesejados do final
-            nome = re.sub(r'[:\-–—]+$', '', nome).strip()
-            if len(nome.split()) >= 2:  # Pelo menos nome e sobrenome
-                info['10 - Nome'] = nome
+            nome = re.sub(r'\s+', ' ', nome)
+            nome = re.sub(r'[:\-]+$', '', nome).strip()
+            
+            palavras = nome.split()
+            if len(palavras) >= 2 and all(len(p) > 1 for p in palavras):
+                data['10 - Nome'] = nome
                 break
-
-
-# Interface de upload
-st.sidebar.header("📤 Upload de Arquivos")
-
-# Opções de visualização
-show_text = st.sidebar.checkbox("Mostrar texto extraído (Debug)", value=False)
-
-uploaded_files = st.sidebar.file_uploader(
-    "Selecione PDFs ou Imagens",
-    type=['pdf', 'png', 'jpg', 'jpeg'],
-    accept_multiple_files=True
-)
-
-# Processar arquivos
-if uploaded_files:
-    st.subheader(f"📊 Processando {len(uploaded_files)} arquivo(s)...")
     
-    all_data = []
-    all_texts = []
-    
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    for idx, file in enumerate(uploaded_files):
-        status_text.text(f"Processando: {file.name}")
-        
-        # Determinar tipo de arquivo e extrair texto
-        if file.name.lower().endswith('.pdf'):
-            text = extract_text_from_pdf(file)
-        else:
-            text = extract_text_from_image(file)
-        
-        if text:
-            all_texts.append({'Arquivo': file.name, 'Texto': text})
-            
-            # Extrair informações
-            info = extract_information(text)
-            info['Arquivo'] = file.name
-            all_data.append(info)
-        
-        # Atualizar barra de progresso
-        progress_bar.progress((idx + 1) / len(uploaded_files))
-    
-    status_text.text("✅ Processamento concluído!")
-    
-    # Mostrar texto extraído se solicitado
-    if show_text and all_texts:
-        st.subheader("🔍 Texto Extraído (Debug)")
-        for item in all_texts:
-            with st.expander(f"📄 {item['Arquivo']}"):
-                st.text_area("Texto completo", item['Texto'], height=300)
-    
-    # Criar DataFrame
-    if all_data:
-        df = pd.DataFrame(all_data)
-        
-        # Reordenar colunas
-        columns_order = ['Arquivo', '1 - Registro ANS', '2 - Número GUIA', 
-                        '4 - Data de Autorização', '10 - Nome', 'Valor da Consulta']
-        df = df[columns_order]
-        
-        # Mostrar resultados
-        st.subheader("📋 Dados Extraídos")
-        
-        # Editor de dados
-        edited_df = st.data_editor(
-            df,
-            use_container_width=True,
-            num_rows="dynamic"
-        )
-        
-        # Estatísticas
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Total de Arquivos", len(edited_df))
-        with col2:
-            campos_preenchidos = edited_df.apply(lambda x: x.str.strip().ne('').sum()).sum()
-            total_campos = len(edited_df) * (len(edited_df.columns) - 1)
-            taxa = (campos_preenchidos/total_campos*100) if total_campos > 0 else 0
-            st.metric("Taxa de Extração", f"{taxa:.1f}%")
-        with col3:
-            valores_extraidos = edited_df['Valor da Consulta'].str.strip().ne('').sum()
-            st.metric("Valores Extraídos", valores_extraidos)
-        
-        # Gerar Excel
-        st.subheader("💾 Download")
-        
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            edited_df.to_excel(writer, index=False, sheet_name='Dados Extraídos')
-            
-            workbook = writer.book
-            worksheet = writer.sheets['Dados Extraídos']
-            
-            header_format = workbook.add_format({
-                'bold': True,
-                'bg_color': '#4CAF50',
-                'font_color': 'white',
-                'border': 1,
-                'align': 'center'
-            })
-            
-            for col_num, value in enumerate(edited_df.columns.values):
-                worksheet.write(0, col_num, value, header_format)
-            
-            for i, col in enumerate(edited_df.columns):
-                max_len = max(edited_df[col].astype(str).apply(len).max(), len(col)) + 2
-                worksheet.set_column(i, i, min(max_len, 50))
-        
-        excel_data = output.getvalue()
-        
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        st.download_button(
-            label="📥 Baixar Planilha Excel",
-            data=excel_data,
-            file_name=f"dados_medicos_{timestamp}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
-        )
-    else:
-        st.warning("⚠️ Nenhum dado foi extraído dos arquivos. Ative 'Mostrar texto extraído' para debug.")
-else:
-    st.info("👈 Faça upload de arquivos PDF ou imagens na barra lateral para começar.")
-    
-    with st.expander("ℹ️ Como usar"):
-        st.markdown("""
-        ### 📖 Instruções de Uso
-        
-        1. **Faça upload** de um ou mais arquivos (PDF ou imagens JPG/PNG)
-        2. **Aguarde** o processamento automático com OCR
-        3. **Revise e edite** os dados extraídos diretamente na tabela
-        4. **Baixe** a planilha Excel formatada
-        
-        ### 💡 Dicas para Melhor Extração
-        
-        - ✅ Use imagens com boa resolução (mínimo 300 DPI)
-        - ✅ Certifique-se de que o texto está legível
-        - ✅ PDFs digitalizados funcionam melhor que PDFs escaneados
-        - ✅ Ative "Mostrar texto extraído" para verificar o que foi lido
-        - ✅ Você pode editar manualmente os dados na tabela
-        
-        ### 🔍 Dados Extraídos
-        
-        O aplicativo busca automaticamente:
-        - **1 - Registro ANS**: número de registro da operadora
-        - **2 - Número GUIA**: número único da guia
-        - **4 - Data de Autorização**: formato DD/MM/AAAA
-        - **10 - Nome**: nome completo do beneficiário
-        - **Valor**: formatos monetários (R$ 100,00)
-        """)
-
-# Rodapé
-st.sidebar.markdown("---")
-st.sidebar.markdown("### ℹ️ Sobre")
-st.sidebar.info("Aplicativo de OCR para extração automática de dados de guias médicas usando Tesseract e PyMuPDF.")
-st.sidebar.markdown("**Versão:** 2.0 | **Motor OCR:** Tesseract")
-            # Limpar nome
-            nome = re.sub(r'\s{2,}', ' ', nome)
-                # Remover caracteres indesejados do final
-                nome = re.sub(r'[:\-–—]+$', '', nome).strip()
-                if len(nome.split()) >= 2:  # Pelo menos nome e sobrenome
-                    info['10 - Nome'] = nome
-                    break
-
-    
-    # === EXTRAÇÃO DE VALOR ===
-    valor_patterns = [
-        r'(?:valor|total|consulta|procedimento)[:\s]*R?\$?\s*(\d{1,3}(?:\.\d{3})*,\d{2})',
+    # ===== VALOR DA CONSULTA =====
+    patterns_valor = [
         r'R\$\s*(\d{1,3}(?:\.\d{3})*,\d{2})',
-        r'(?:pagar|cobrar)[:\s]*R?\$?\s*(\d{1,3}(?:\.\d{3})*,\d{2})',
-        r'\bR\$?\s*(\d+,\d{2})\b'
+        r'[Vv]alor[:\s]*R?\$?\s*(\d{1,3}(?:\.\d{3})*,\d{2})',
+        r'[Tt]otal[:\s]*R?\$?\s*(\d{1,3}(?:\.\d{3})*,\d{2})',
+        r'(\d{1,3}(?:\.\d{3})*,\d{2})',
     ]
-    for pattern in valor_patterns:
-        match = re.search(pattern, text_normalized, re.IGNORECASE)
+    
+    for pattern in patterns_valor:
+        match = re.search(pattern, text)
         if match:
-            info['Valor da Consulta'] = match.group(1)
+            data['Valor da Consulta'] = match.group(1)
             break
     
-    return info
+    return data
 
-# Interface de upload
+
+# ==================== INTERFACE DO USUÁRIO ====================
+
+# Sidebar
 st.sidebar.header("📤 Upload de Arquivos")
-
-# Opções de visualização
-show_text = st.sidebar.checkbox("Mostrar texto extraído (Debug)", value=False)
+show_debug = st.sidebar.checkbox("🔍 Mostrar texto extraído (Debug)", value=False)
 
 uploaded_files = st.sidebar.file_uploader(
-    "Selecione PDFs ou Imagens",
+    "Selecione arquivos PDF ou imagens",
     type=['pdf', 'png', 'jpg', 'jpeg'],
-    accept_multiple_files=True
+    accept_multiple_files=True,
+    help="Arraste e solte seus arquivos aqui"
 )
 
-# Processar arquivos
+# Processamento principal
 if uploaded_files:
     st.subheader(f"📊 Processando {len(uploaded_files)} arquivo(s)...")
     
-    all_data = []
-    all_texts = []
+    results = []
+    debug_texts = []
     
     progress_bar = st.progress(0)
     status_text = st.empty()
@@ -401,139 +221,192 @@ if uploaded_files:
     for idx, file in enumerate(uploaded_files):
         status_text.text(f"Processando: {file.name}")
         
-        # Determinar tipo de arquivo e extrair texto
+        # Extrair texto
         if file.name.lower().endswith('.pdf'):
             text = extract_text_from_pdf(file)
         else:
             text = extract_text_from_image(file)
         
         if text:
-            all_texts.append({'Arquivo': file.name, 'Texto': text})
+            # Salvar para debug
+            debug_texts.append({
+                'Arquivo': file.name,
+                'Texto': text
+            })
             
-            # Extrair informações
-            info = extract_information(text)
-            info['Arquivo'] = file.name
-            all_data.append(info)
+            # Extrair dados
+            extracted_data = extract_medical_data(text)
+            extracted_data['Arquivo'] = file.name
+            results.append(extracted_data)
+        else:
+            st.warning(f"Não foi possível extrair texto de {file.name}")
         
-        # Atualizar barra de progresso
         progress_bar.progress((idx + 1) / len(uploaded_files))
     
     status_text.text("✅ Processamento concluído!")
     
-    # Mostrar texto extraído se solicitado
-    if show_text and all_texts:
+    # Mostrar texto extraído se debug ativado
+    if show_debug and debug_texts:
         st.subheader("🔍 Texto Extraído (Debug)")
-        for item in all_texts:
+        for item in debug_texts:
             with st.expander(f"📄 {item['Arquivo']}"):
-                st.text_area("Texto completo", item['Texto'], height=300)
+                st.text_area(
+                    "Texto completo extraído",
+                    item['Texto'],
+                    height=300,
+                    key=f"debug_{item['Arquivo']}"
+                )
     
     # Criar DataFrame
-    if all_data:
-        df = pd.DataFrame(all_data)
+    if results:
+        df = pd.DataFrame(results)
         
-        # Reordenar colunas
-        columns_order = ['Arquivo', 'Data de Atendimento', 'Número da Guia', 
-                        'Número de Atendimento', 'Nome do Paciente', 'Valor da Consulta']
-        df = df[columns_order]
+        # Ordenar colunas
+        column_order = [
+            'Arquivo',
+            '1 - Registro ANS',
+            '2 - Número GUIA',
+            '4 - Data de Autorização',
+            '10 - Nome',
+            'Valor da Consulta'
+        ]
+        df = df[column_order]
         
-        # Mostrar resultados
+        # Exibir dados extraídos
         st.subheader("📋 Dados Extraídos")
         
-        # Editor de dados
         edited_df = st.data_editor(
             df,
             use_container_width=True,
-            num_rows="dynamic"
+            num_rows="dynamic",
+            key="data_editor"
         )
         
         # Estatísticas
         col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Total de Arquivos", len(edited_df))
-        with col2:
-            campos_preenchidos = edited_df.apply(lambda x: x.str.strip().ne('').sum()).sum()
-            total_campos = len(edited_df) * (len(edited_df.columns) - 1)
-            taxa = (campos_preenchidos/total_campos*100) if total_campos > 0 else 0
-            st.metric("Taxa de Extração", f"{taxa:.1f}%")
-        with col3:
-            valores_extraidos = edited_df['Valor da Consulta'].str.strip().ne('').sum()
-            st.metric("Valores Extraídos", valores_extraidos)
         
-        # Gerar Excel
+        with col1:
+            st.metric("📁 Arquivos Processados", len(edited_df))
+        
+        with col2:
+            total_campos = len(edited_df) * 5  # 5 campos principais
+            campos_preenchidos = 0
+            for col in ['1 - Registro ANS', '2 - Número GUIA', '4 - Data de Autorização', '10 - Nome', 'Valor da Consulta']:
+                campos_preenchidos += edited_df[col].astype(str).str.strip().ne('').sum()
+            
+            taxa = (campos_preenchidos / total_campos * 100) if total_campos > 0 else 0
+            st.metric("📊 Taxa de Extração", f"{taxa:.1f}%")
+        
+        with col3:
+            valores_count = edited_df['Valor da Consulta'].astype(str).str.strip().ne('').sum()
+            st.metric("💰 Valores Extraídos", valores_count)
+        
+        # Gerar Excel para download
         st.subheader("💾 Download")
         
         output = io.BytesIO()
+        
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            edited_df.to_excel(writer, index=False, sheet_name='Dados Extraídos')
+            edited_df.to_excel(writer, index=False, sheet_name='Dados Médicos')
             
             workbook = writer.book
-            worksheet = writer.sheets['Dados Extraídos']
+            worksheet = writer.sheets['Dados Médicos']
             
+            # Formato do cabeçalho
             header_format = workbook.add_format({
                 'bold': True,
-                'bg_color': '#4CAF50',
-                'font_color': 'white',
-                'border': 1,
-                'align': 'center'
+                'text_wrap': True,
+                'valign': 'center',
+                'fg_color': '#4CAF50',
+                'font_color': '#FFFFFF',
+                'border': 1
             })
             
+            # Aplicar formato
             for col_num, value in enumerate(edited_df.columns.values):
                 worksheet.write(0, col_num, value, header_format)
-            
-            for i, col in enumerate(edited_df.columns):
-                max_len = max(edited_df[col].astype(str).apply(len).max(), len(col)) + 2
-                worksheet.set_column(i, i, min(max_len, 50))
+                
+                # Ajustar largura das colunas
+                max_length = max(
+                    edited_df[value].astype(str).apply(len).max(),
+                    len(str(value))
+                ) + 2
+                worksheet.set_column(col_num, col_num, min(max_length, 50))
         
         excel_data = output.getvalue()
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
         st.download_button(
             label="📥 Baixar Planilha Excel",
             data=excel_data,
-            file_name=f"dados_medicos_{timestamp}.xlsx",
+            file_name=f"guias_medicas_{timestamp}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True
         )
-    else:
-        st.warning("⚠️ Nenhum dado foi extraído dos arquivos. Ative 'Mostrar texto extraído' para debug.")
-else:
-    st.info("👈 Faça upload de arquivos PDF ou imagens na barra lateral para começar.")
+        
+        # CSV alternativo
+        csv = edited_df.to_csv(index=False).encode('utf-8-sig')
+        st.download_button(
+            label="📄 Baixar CSV",
+            data=csv,
+            file_name=f"guias_medicas_{timestamp}.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
     
-    with st.expander("ℹ️ Como usar"):
+    else:
+        st.warning("⚠️ Nenhum dado foi extraído. Verifique os arquivos e tente novamente.")
+
+else:
+    # Tela inicial
+    st.info("👈 **Faça upload de arquivos na barra lateral para começar**")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("### 📖 Como Usar")
         st.markdown("""
-        ### 📖 Instruções de Uso
+        1. **Faça upload** de PDFs ou imagens (JPG/PNG)
+        2. **Aguarde** o processamento automático
+        3. **Revise** e edite os dados na tabela
+        4. **Baixe** a planilha Excel
         
-        1. **Faça upload** de um ou mais arquivos (PDF ou imagens JPG/PNG)
-        2. **Aguarde** o processamento automático com OCR
-        3. **Revise e edite** os dados extraídos diretamente na tabela
-        4. **Baixe** a planilha Excel formatada
-        
-        ### 💡 Dicas para Melhor Extração
-        
-        - ✅ Use imagens com boa resolução (mínimo 300 DPI)
-        - ✅ Certifique-se de que o texto está legível
-        - ✅ PDFs digitalizados funcionam melhor que PDFs escaneados
-        - ✅ Ative "Mostrar texto extraído" para verificar o que foi lido
-        - ✅ Você pode editar manualmente os dados na tabela
-        
-        ### 🔍 Dados Extraídos
-        
-        O aplicativo busca automaticamente:
-        - **Data de atendimento**: formatos DD/MM/AAAA
-        - **Número da guia**: sequências numéricas após "guia"
-        - **Número de atendimento**: sequências após "atendimento" ou "protocolo"
-        - **Nome do paciente**: nome completo após "paciente" ou "beneficiário"
-        - **Valor**: formatos monetários (R$ 100,00)
+        💡 **Dica:** Ative o modo debug para ver o texto extraído
+        """)
+    
+    with col2:
+        st.markdown("### ⚙️ Requisitos")
+        st.markdown("""
+        **Para melhor resultado:**
+        - ✅ Imagens com resolução mínima de 300 DPI
+        - ✅ Texto legível e bem contrastado
+        - ✅ PDFs nativos (não escaneados) funcionam melhor
+        - ✅ Arquivos individuais (uma guia por arquivo)
         """)
 
 # Rodapé
 st.sidebar.markdown("---")
-st.sidebar.markdown("### ℹ️ Sobre")
-st.sidebar.info("Aplicativo de OCR para extração automática de dados de guias médicas usando Tesseract e PyMuPDF.")
-st.sidebar.markdown("**Versão:** 2.0 | **Motor OCR:** Tesseract")
+st.sidebar.markdown("### ℹ️ Informações")
+st.sidebar.info("""
+**Versão:** 3.0  
+**OCR Engine:** Tesseract  
+**PDF Engine:** PyMuPDF  
 
+Extrai automaticamente dados de guias médicas usando reconhecimento óptico de caracteres (OCR).
+""")
 
+# Instruções de instalação
+with st.sidebar.expander("📦 Instalação Local"):
+    st.code("""
+# Ubuntu/Debian
+sudo apt-get install tesseract-ocr tesseract-ocr-por
+pip install -r requirements.txt
 
+# macOS
+brew install tesseract tesseract-lang
+pip install -r requirements.txt
 
-
-
+# Executar
+streamlit run app.py
+    """, language="bash")
