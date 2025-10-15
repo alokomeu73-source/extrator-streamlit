@@ -15,4 +15,5 @@ torchvision>=0.15.0
 opencv-python-headless>=4.8.0
 
 # Opção 2: Tesseract (mais leve, requer instalação do sistema)
-# pytesseract>=0.3.10
+pytesseract>=0.3.10
+
