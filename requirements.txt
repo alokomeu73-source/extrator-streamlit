@@ -1,13 +1,6 @@
-streamlit>=1.31.0
-pandas>=2.0.0
-pillow>=10.0.0
-PyMuPDF>=1.23.0
-xlsxwriter>=3.0.0
-openpyxl>=3.1.0
-numpy>=1.24.0
-
-# OCR Engine
-easyocr>=1.7.0
-torch>=2.0.0
-torchvision>=0.15.0
-opencv-python-headless>=4.8.0
+streamlit==1.38.0
+pandas==2.2.2
+PyMuPDF==1.24.9
+easyocr==1.7.1
+torch==2.3.0
+torchvision==0.18.0
