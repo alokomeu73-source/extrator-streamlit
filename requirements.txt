@@ -1,8 +1,7 @@
-streamlit
-easyocr
-PyMuPDF
-pandas
-openpyxl
-Pillow
-numpy
-opencv-python-headless
+streamlit>=1.31.0
+pandas>=2.0.0
+pillow>=10.0.0
+pytesseract>=0.3.10
+PyMuPDF>=1.23.0
+xlsxwriter>=3.0.0
+openpyxl>=3.1.0
