@@ -8,11 +8,14 @@ from io import BytesIO
 from PIL import Image, ImageEnhance, ImageFilter
 import numpy as np
 
-# --- Configurações ---
-st.set_page_config(page_title="Leitor de PDFs Médicos 🩺", layout="wide")
+# --- Requisito: Adicione 'openpyxl' ao seu requirements.txt ---
+# import openpyxl # Necessário para download XLSX
 
-st.title("📄 Extração Rápida de Guias Médicas (Estrutura Corrigida)")
-st.markdown("Otimizado para carregar a interface instantaneamente. O modelo de OCR só será carregado após o envio do primeiro arquivo.")
+# --- Configurações ---
+st.set_page_config(page_title="Leitor de PDFs e Imagens Médicos 🩺", layout="wide")
+
+st.title("📄 Extração Universal de Guias Médicas")
+st.markdown("Extrai dados de **PDFs** (escaneados ou digitais) e **Imagens** (`.jpg`, `.png`).")
 
 # --- Inicialização do OCR (carrega uma vez, com feedback) ---
 @st.cache_resource
@@ -34,7 +37,24 @@ def apply_image_enhancements(img):
     
     return img
 
-# --- Função para extrair texto híbrido (OCR + digital) ---
+# --- Função para extrair texto de Imagem (Novo) ---
+def extract_text_from_image(file, reader):
+    """Extrai texto de um arquivo de imagem diretamente usando OCR."""
+    try:
+        # A PIL já consegue abrir o BytesIO do arquivo de upload do Streamlit
+        img = Image.open(file)
+        img = apply_image_enhancements(img)
+        
+        # Converte para NumPy array
+        img_array = np.array(img)
+        
+        ocr_result = reader.readtext(img_array, detail=0, paragraph=True)
+        return "\n".join(ocr_result).strip()
+    except Exception as e:
+        st.error(f"Erro ao processar imagem: {e}")
+        return None
+
+# --- Função para extrair texto híbrido de PDF (Adaptado) ---
 def extract_text_from_pdf(file, reader):
     """Extrai texto do PDF (digital) e usa OCR apenas em páginas de imagem."""
     text_content = ""
@@ -86,10 +106,10 @@ def extract_info(text):
     if not text:
         return data
     
+    # Processamento e padrões RegEx (inalterado)
     text = text.replace('\n', ' ')
     text = re.sub(r'\s+', ' ', text)
     
-    # --- Padrões de Busca (Mantidos do RegEx robusto) ---
     patterns = {
         '1 - Registro ANS': [r'1\s*-\s*Registro\s+ANS[:\s]*(\d+)', r'ANS[:\s]*[Nn]?[°º]?\s*(\d{6,})'],
         '2 - Número GUIA': [r'2\s*-\s*N[uú]mero\s+GUIA[:\s]*(\d+)', r'GUIA[:\s]*[Nn°º]?\s*(\d{5,})'],
@@ -115,11 +135,25 @@ def extract_info(text):
     return data
 
 
-# --- Upload dos arquivos ---
-uploaded_files = st.file_uploader("Envie um ou mais PDFs 📎", type=["pdf"], accept_multiple_files=True)
+# --- Função para download XLSX ---
+@st.cache_data
+def convert_df_to_xlsx(df):
+    """Converte o DataFrame para um objeto BytesIO XLSX."""
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='Dados Extraídos')
+    return output.getvalue()
+
+
+# --- Upload dos arquivos (Aceitando PDF e Imagens) ---
+uploaded_files = st.file_uploader(
+    "Envie PDFs (.pdf) ou Imagens (.png, .jpg) 📎", 
+    type=["pdf", "png", "jpg", "jpeg"], 
+    accept_multiple_files=True
+)
 
 if uploaded_files:
-    # 1. CARREGA O MODELO DE OCR (se já não estiver em cache)
+    # 1. CARREGA O MODELO DE OCR
     reader = load_ocr() 
     
     if reader is None:
@@ -127,24 +161,27 @@ if uploaded_files:
         st.stop()
 
     all_data = []
-    
-    # Lista temporária para armazenar o texto extraído para exibição posterior
     file_contents = {} 
     
     # 2. EXECUTA O PROCESSAMENTO NO BLOCO ST.STATUS
-    with st.status("Preparando o ambiente e processando PDFs...", expanded=True) as status:
+    with st.status("Preparando o ambiente e processando arquivos...", expanded=True) as status:
         
         for file_index, file in enumerate(uploaded_files):
             status.update(label=f"Processando arquivo {file_index + 1}/{len(uploaded_files)}: **{file.name}**")
             
-            # Extrair texto
-            text = extract_text_from_pdf(file, reader)
+            # Decide se usa o extrator de PDF ou de Imagem
+            mime_type = file.type
+            
+            if 'pdf' in mime_type:
+                text = extract_text_from_pdf(file, reader)
+            elif 'image' in mime_type or file.name.lower().endswith(('.png', '.jpg', '.jpeg')):
+                text = extract_text_from_image(file, reader)
+            else:
+                st.warning(f"Tipo de arquivo não suportado: {file.name}")
+                continue
             
             if text:
-                # Armazena o conteúdo para o expander fora do status
                 file_contents[file.name] = text 
-                
-                # Extrair informações
                 info = extract_info(text)
                 info["Arquivo"] = file.name
                 all_data.append(info)
@@ -154,7 +191,7 @@ if uploaded_files:
         status.update(label="✅ Extração concluída! Revisando dados.", state="complete", expanded=False)
 
     
-    # 3. EXIBE OS RESULTADOS (FORA DO ST.STATUS)
+    # 3. EXIBE OS RESULTADOS E O DOWNLOAD XLSX
     if all_data:
         df = pd.DataFrame(all_data)
         st.success("✅ Extração de dados finalizada! Revise a tabela abaixo.")
@@ -162,7 +199,6 @@ if uploaded_files:
         # --- Exibe o Expander Agora (fora do st.status) ---
         st.subheader("Conteúdo Extraído por Arquivo")
         for filename, text in file_contents.items():
-             # O st.expander agora está aqui, fora do st.status, resolvendo o erro!
              with st.expander(f"📘 Texto extraído de {filename}", expanded=False):
                 st.text_area("Conteúdo detectado:", text[:5000], height=200, key=f"text_area_{filename}")
         
@@ -174,14 +210,15 @@ if uploaded_files:
         st.subheader("📋 Tabela de Dados (Edite para Corrigir OCR)")
         edited_df = st.data_editor(df, use_container_width=True, num_rows="dynamic")
 
-        csv = edited_df.to_csv(index=False).encode("utf-8")
-        st.download_button("💾 Baixar resultado (.csv)", csv, "dados_extraidos.csv", "text/csv")
+        # --- DOWNLOAD XLSX (Excel) ---
+        xlsx_data = convert_df_to_xlsx(edited_df)
+        st.download_button(
+            "💾 Baixar resultado (.xlsx)", 
+            xlsx_data, 
+            "dados_extraidos.xlsx", 
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
     
 else:
-    st.info("Envie um ou mais arquivos PDF para começar.")
-    st.markdown("""
-        ---
-        ### 🚀 Status da Aplicação:
-        * **Problema Resolvido:** O erro de estrutura (`StreamlitAPIException`) foi corrigido.
-        * **Otimização:** O modelo de OCR só será carregado **após o primeiro arquivo ser enviado**, garantindo um início rápido.
-        """)
+    st.info("Envie um ou mais arquivos (PDF ou Imagem) para começar.")
+    st.markdown("---")
