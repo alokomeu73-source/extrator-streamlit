@@ -1,259 +1,300 @@
 import streamlit as st
 import pandas as pd
-import io
 import re
+import io
+from PIL import Image
+import numpy as np
+import fitz  # PyMuPDF
 from datetime import datetime
-
-# Verificar dependências críticas no início
-try:
-    import numpy as np
-except ImportError:
-    st.error("❌ NumPy não está instalado. Verifique o requirements.txt")
-    st.stop()
-
-try:
-    import fitz  # PyMuPDF
-except ImportError:
-    st.error("❌ PyMuPDF não está instalado. Verifique o requirements.txt")
-    st.stop()
-
-try:
-    from PIL import Image
-except ImportError:
-    st.error("❌ Pillow não está instalado. Verifique o requirements.txt")
-    st.stop()
-
-try:
-    import easyocr
-except ImportError:
-    st.error("❌ EasyOCR não está instalado. Verifique o requirements.txt")
-    st.stop()
 
 # Configuração da página
 st.set_page_config(
     page_title="Extrator de Guias Médicas",
-    page_icon="📋",
+    page_icon="🏥",
     layout="wide"
 )
 
-# Função para carregar o modelo EasyOCR (com cache)
+# Variável global para armazenar o reader
+if 'ocr_reader' not in st.session_state:
+    st.session_state.ocr_reader = None
+    st.session_state.ocr_loaded = False
+
+
 @st.cache_resource
-def load_ocr_model():
-    """Carrega o modelo EasyOCR uma única vez"""
-    return easyocr.Reader(['pt'], gpu=False)
+def load_easyocr():
+    """Carrega o modelo EasyOCR apenas uma vez e mantém em cache"""
+    import easyocr
+    reader = easyocr.Reader(['pt'], gpu=False, verbose=False)
+    return reader
 
-# Função para extrair campos usando RegEx
-def extract_fields(text):
-    """Extrai os 4 campos obrigatórios do texto usando RegEx"""
-    fields = {
-        'Registro ANS': '',
-        'Número GUIA': '',
-        'Data de Autorização': '',
-        'Nome': ''
-    }
-    
-    # 1 - Registro ANS (sequência numérica, geralmente 6 dígitos)
-    ans_pattern = r'(?:1\s*[-\s]*)?(?:Registro\s*ANS|ANS)[:\s]*(\d{6,})'
-    ans_match = re.search(ans_pattern, text, re.IGNORECASE)
-    if ans_match:
-        fields['Registro ANS'] = ans_match.group(1)
-    
-    # 2 - Número GUIA (alfanumérico)
-    guia_pattern = r'(?:2\s*[-\s]*)?(?:N[úu]mero|N[°º]|Numero)\s*(?:da\s*)?(?:GUIA|Guia)[:\s]*([A-Z0-9\-]+)'
-    guia_match = re.search(guia_pattern, text, re.IGNORECASE)
-    if guia_match:
-        fields['Número GUIA'] = guia_match.group(1)
-    
-    # 4 - Data de Autorização (formatos: DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY)
-    data_pattern = r'(?:4\s*[-\s]*)?(?:Data\s*(?:de\s*)?Autoriza[çc][ãa]o)[:\s]*(\d{2}[/\-\.]\d{2}[/\-\.]\d{4})'
-    data_match = re.search(data_pattern, text, re.IGNORECASE)
-    if data_match:
-        fields['Data de Autorização'] = data_match.group(1)
-    
-    # 10 - Nome (captura texto após "Nome" até quebra de linha ou próximo campo)
-    nome_pattern = r'(?:10\s*[-\s]*)?(?:Nome)[:\s]*([A-ZÀÁÂÃÈÉÊÌÍÒÓÔÕÙÚÇ][A-Za-zÀ-ÿ\s]+?)(?:\n|\d+\s*[-\s]|$)'
-    nome_match = re.search(nome_pattern, text, re.IGNORECASE)
-    if nome_match:
-        fields['Nome'] = nome_match.group(1).strip()
-    
-    return fields
 
-# Função para processar imagem com EasyOCR
-def process_image_ocr(image, reader):
-    """Processa uma imagem PIL e retorna o texto extraído"""
-    # Converter PIL Image para numpy array
+def extract_text_from_image(image):
+    """Extrai texto de uma imagem usando EasyOCR"""
+    if st.session_state.ocr_reader is None:
+        with st.spinner("🔄 Carregando modelo OCR pela primeira vez... (isso pode levar alguns segundos)"):
+            st.session_state.ocr_reader = load_easyocr()
+            st.session_state.ocr_loaded = True
+    
+    # Converte PIL Image para numpy array
     img_array = np.array(image)
     
-    # Realizar OCR
-    results = reader.readtext(img_array)
+    # Executa OCR
+    results = st.session_state.ocr_reader.readtext(img_array)
     
-    # Concatenar todo o texto
+    # Concatena todos os textos extraídos
     text = ' '.join([result[1] for result in results])
     return text
 
-# Função para processar PDF
-def process_pdf(pdf_file, reader):
-    """Processa um arquivo PDF e extrai dados de cada página"""
-    extracted_data = []
+
+def extract_text_from_pdf(pdf_file):
+    """Extrai texto de um arquivo PDF usando PyMuPDF e OCR"""
+    pdf_bytes = pdf_file.read()
+    pdf_document = fitz.open(stream=pdf_bytes, filetype="pdf")
     
-    # Abrir o PDF
-    pdf_document = fitz.open(stream=pdf_file.read(), filetype="pdf")
+    full_text = ""
+    total_pages = len(pdf_document)
     
     progress_bar = st.progress(0)
     status_text = st.empty()
     
-    total_pages = len(pdf_document)
-    
     for page_num in range(total_pages):
         status_text.text(f"Processando página {page_num + 1} de {total_pages}...")
         
-        # Carregar a página
         page = pdf_document[page_num]
         
-        # Converter página para imagem (zoom 2x para melhor qualidade)
-        mat = fitz.Matrix(2, 2)
-        pix = page.get_pixmap(matrix=mat)
+        # Tenta extrair texto direto primeiro
+        page_text = page.get_text()
         
-        # Converter para PIL Image
-        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+        # Se não houver texto, usa OCR
+        if not page_text.strip():
+            # Converte página para imagem com zoom 2x
+            mat = fitz.Matrix(2, 2)
+            pix = page.get_pixmap(matrix=mat)
+            img_data = pix.tobytes("png")
+            img = Image.open(io.BytesIO(img_data))
+            page_text = extract_text_from_image(img)
         
-        # Realizar OCR
-        text = process_image_ocr(img, reader)
-        
-        # Extrair campos
-        fields = extract_fields(text)
-        fields['Página'] = page_num + 1
-        fields['Arquivo'] = pdf_file.name
-        
-        extracted_data.append(fields)
-        
-        # Atualizar barra de progresso
+        full_text += page_text + "\n"
         progress_bar.progress((page_num + 1) / total_pages)
     
     pdf_document.close()
-    status_text.empty()
     progress_bar.empty()
+    status_text.empty()
     
-    return extracted_data
+    return full_text
 
-# Função para processar imagem única
-def process_single_image(image_file, reader):
-    """Processa um arquivo de imagem único"""
-    # Abrir imagem
-    image = Image.open(image_file)
-    
-    # Realizar OCR
-    text = process_image_ocr(image, reader)
-    
-    # Extrair campos
-    fields = extract_fields(text)
-    fields['Página'] = 1
-    fields['Arquivo'] = image_file.name
-    
-    return [fields]
 
-# Interface principal
-def main():
-    st.title("📋 Extrator de Guias Médicas")
-    st.markdown("### Extraia dados de guias médicas em PDF ou Imagem")
+def extract_fields_from_text(text, filename):
+    """Extrai os campos específicos usando RegEx"""
     
-    st.info("ℹ️ **Formato suportado:** PDF, PNG, JPG, JPEG")
+    # Remove quebras de linha e espaços extras para facilitar matching
+    text_clean = ' '.join(text.split())
     
-    # Upload de arquivos
-    uploaded_files = st.file_uploader(
-        "Envie um ou mais arquivos",
-        type=['pdf', 'png', 'jpg', 'jpeg'],
-        accept_multiple_files=True
+    # Dicionário para armazenar os campos extraídos
+    data = {
+        'Arquivo': filename,
+        '1 - Registro ANS': '',
+        '2 - Número GUIA': '',
+        '4 - Data de Autorização': '',
+        '10 - Nome': ''
+    }
+    
+    # RegEx para Registro ANS (vários formatos possíveis)
+    ans_patterns = [
+        r'(?:Registro\s+ANS|ANS)[:\s]*([0-9]{5,7})',
+        r'(?:1\s*[-.\s]*Registro\s+ANS)[:\s]*([0-9]{5,7})',
+        r'(?:^|\s)([0-9]{6})(?:\s|$)',  # 6 dígitos isolados
+    ]
+    for pattern in ans_patterns:
+        match = re.search(pattern, text_clean, re.IGNORECASE)
+        if match:
+            data['1 - Registro ANS'] = match.group(1).strip()
+            break
+    
+    # RegEx para Número da GUIA (vários formatos)
+    guia_patterns = [
+        r'(?:N[úu]mero\s+(?:da\s+)?GUIA|GUIA)[:\s]*([0-9]{10,20})',
+        r'(?:2\s*[-.\s]*N[úu]mero\s+GUIA)[:\s]*([0-9]{10,20})',
+        r'(?:N[°º]\s*Guia)[:\s]*([0-9]{10,20})',
+        r'(?:GUIA\s*N[°º]?)[:\s]*([0-9]{10,20})',
+    ]
+    for pattern in guia_patterns:
+        match = re.search(pattern, text_clean, re.IGNORECASE)
+        if match:
+            data['2 - Número GUIA'] = match.group(1).strip()
+            break
+    
+    # RegEx para Data de Autorização (formato DD/MM/YYYY ou DD-MM-YYYY)
+    data_patterns = [
+        r'(?:Data\s+(?:de\s+)?Autoriza[çc][ãa]o)[:\s]*([0-3]?[0-9][/-][0-1]?[0-9][/-][0-9]{4})',
+        r'(?:4\s*[-.\s]*Data\s+(?:de\s+)?Autoriza[çc][ãa]o)[:\s]*([0-3]?[0-9][/-][0-1]?[0-9][/-][0-9]{4})',
+        r'(?:Autoriza[çc][ãa]o)[:\s]*([0-3]?[0-9][/-][0-1]?[0-9][/-][0-9]{4})',
+    ]
+    for pattern in data_patterns:
+        match = re.search(pattern, text_clean, re.IGNORECASE)
+        if match:
+            data['4 - Data de Autorização'] = match.group(1).strip().replace('-', '/')
+            break
+    
+    # RegEx para Nome (campo 10)
+    nome_patterns = [
+        r'(?:10\s*[-.\s]*Nome)[:\s]*([A-ZÀÁÂÃÄÅÇÈÉÊËÌÍÎÏÑÒÓÔÕÖÙÚÛÜ\s]{3,50})',
+        r'(?:Nome\s+(?:do\s+)?(?:Benefici[áa]rio|Paciente))[:\s]*([A-ZÀÁÂÃÄÅÇÈÉÊËÌÍÎÏÑÒÓÔÕÖÙÚÛÜ\s]{3,50})',
+        r'(?:Benefici[áa]rio)[:\s]*([A-ZÀÁÂÃÄÅÇÈÉÊËÌÍÎÏÑÒÓÔÕÖÙÚÛÜ\s]{3,50})',
+    ]
+    for pattern in nome_patterns:
+        match = re.search(pattern, text_clean, re.IGNORECASE)
+        if match:
+            nome_raw = match.group(1).strip()
+            # Remove números e caracteres especiais do nome
+            nome_clean = re.sub(r'[0-9\-/:]', '', nome_raw).strip()
+            data['10 - Nome'] = nome_clean
+            break
+    
+    return data
+
+
+def process_image_file(image_file):
+    """Processa um arquivo de imagem"""
+    img = Image.open(image_file)
+    
+    # Converte para RGB se necessário
+    if img.mode != 'RGB':
+        img = img.convert('RGB')
+    
+    with st.spinner(f"🔍 Extraindo texto de {image_file.name}..."):
+        text = extract_text_from_image(img)
+    
+    return extract_fields_from_text(text, image_file.name)
+
+
+def process_pdf_file(pdf_file):
+    """Processa um arquivo PDF"""
+    with st.spinner(f"📄 Processando PDF {pdf_file.name}..."):
+        text = extract_text_from_pdf(pdf_file)
+    
+    return extract_fields_from_text(text, pdf_file.name)
+
+
+def convert_df_to_excel(df):
+    """Converte DataFrame para arquivo Excel em bytes"""
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='Guias Médicas')
+    output.seek(0)
+    return output
+
+
+# Interface do Streamlit
+st.title("🏥 Extrator de Dados de Guias Médicas")
+st.markdown("""
+Este aplicativo extrai automaticamente informações de guias médicas em formato **PDF** ou **Imagem**.
+
+**Campos extraídos:**
+- 1 - Registro ANS
+- 2 - Número GUIA  
+- 4 - Data de Autorização
+- 10 - Nome
+""")
+
+st.divider()
+
+# Upload de arquivos
+uploaded_files = st.file_uploader(
+    "📤 Faça upload das guias médicas (PDF ou Imagem)",
+    type=['pdf', 'png', 'jpg', 'jpeg'],
+    accept_multiple_files=True,
+    help="Você pode selecionar múltiplos arquivos de uma vez"
+)
+
+if uploaded_files:
+    st.success(f"✅ {len(uploaded_files)} arquivo(s) carregado(s)")
+    
+    if st.button("🚀 Processar Arquivos", type="primary", use_container_width=True):
+        results = []
+        
+        # Processa cada arquivo
+        for idx, file in enumerate(uploaded_files):
+            st.write(f"**Processando {idx + 1}/{len(uploaded_files)}: {file.name}**")
+            
+            try:
+                if file.type == "application/pdf":
+                    data = process_pdf_file(file)
+                else:
+                    data = process_image_file(file)
+                
+                results.append(data)
+                st.success(f"✓ {file.name} processado com sucesso!")
+                
+            except Exception as e:
+                st.error(f"❌ Erro ao processar {file.name}: {str(e)}")
+                # Adiciona linha vazia em caso de erro
+                results.append({
+                    'Arquivo': file.name,
+                    '1 - Registro ANS': 'ERRO',
+                    '2 - Número GUIA': 'ERRO',
+                    '4 - Data de Autorização': 'ERRO',
+                    '10 - Nome': 'ERRO'
+                })
+        
+        # Cria DataFrame
+        if results:
+            df = pd.DataFrame(results)
+            st.session_state.df_results = df
+            st.success("🎉 Processamento concluído!")
+
+# Exibe e permite edição dos resultados
+if 'df_results' in st.session_state:
+    st.divider()
+    st.subheader("📊 Resultados Extraídos")
+    st.info("💡 Você pode editar os dados na tabela abaixo antes de fazer o download")
+    
+    # Editor de dados
+    edited_df = st.data_editor(
+        st.session_state.df_results,
+        use_container_width=True,
+        num_rows="dynamic",
+        column_config={
+            "Arquivo": st.column_config.TextColumn("Arquivo", width="medium"),
+            "1 - Registro ANS": st.column_config.TextColumn("Registro ANS", width="small"),
+            "2 - Número GUIA": st.column_config.TextColumn("Número GUIA", width="medium"),
+            "4 - Data de Autorização": st.column_config.TextColumn("Data Autorização", width="small"),
+            "10 - Nome": st.column_config.TextColumn("Nome", width="large"),
+        }
     )
     
-    if uploaded_files:
-        # Inicializar o modelo OCR APENAS após o upload
-        with st.spinner("🔄 Carregando modelo OCR (primeira execução pode levar alguns minutos)..."):
-            reader = load_ocr_model()
-        
-        st.success("✅ Modelo OCR carregado!")
-        
-        if st.button("🚀 Processar Arquivos", type="primary"):
-            all_data = []
-            
-            for uploaded_file in uploaded_files:
-                st.subheader(f"📄 Processando: {uploaded_file.name}")
-                
-                try:
-                    # Verificar tipo de arquivo
-                    if uploaded_file.type == "application/pdf":
-                        data = process_pdf(uploaded_file, reader)
-                    else:
-                        data = process_single_image(uploaded_file, reader)
-                    
-                    all_data.extend(data)
-                    st.success(f"✅ {uploaded_file.name} processado com sucesso!")
-                    
-                except Exception as e:
-                    st.error(f"❌ Erro ao processar {uploaded_file.name}: {str(e)}")
-            
-            if all_data:
-                # Criar DataFrame
-                df = pd.DataFrame(all_data)
-                
-                # Reordenar colunas
-                columns_order = ['Arquivo', 'Página', 'Registro ANS', 'Número GUIA', 
-                               'Data de Autorização', 'Nome']
-                df = df[columns_order]
-                
-                st.success(f"🎉 Total de {len(df)} registro(s) extraído(s)!")
-                
-                # Editor de dados
-                st.subheader("✏️ Edite os dados extraídos (se necessário)")
-                edited_df = st.data_editor(
-                    df,
-                    num_rows="dynamic",
-                    use_container_width=True,
-                    hide_index=True
-                )
-                
-                # Preparar download
-                st.subheader("💾 Download")
-                
-                # Converter para Excel
-                output = io.BytesIO()
-                with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                    edited_df.to_excel(writer, index=False, sheet_name='Guias Médicas')
-                
-                excel_data = output.getvalue()
-                
-                # Botão de download
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                st.download_button(
-                    label="📥 Baixar planilha XLSX",
-                    data=excel_data,
-                    file_name=f"guias_medicas_{timestamp}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-    else:
-        st.warning("⚠️ Faça upload de pelo menos um arquivo para começar")
+    # Botão de download
+    st.divider()
+    col1, col2, col3 = st.columns([1, 2, 1])
     
-    # Rodapé com instruções
-    with st.expander("ℹ️ Instruções de Uso"):
-        st.markdown("""
-        **Como usar:**
-        1. Faça upload de um ou mais arquivos (PDF ou Imagem)
-        2. Clique em "Processar Arquivos"
-        3. Aguarde o processamento (pode levar alguns minutos)
-        4. Edite os dados extraídos se necessário
-        5. Baixe a planilha XLSX
+    with col2:
+        excel_file = convert_df_to_excel(edited_df)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
-        **Campos extraídos:**
-        - Registro ANS
-        - Número GUIA
-        - Data de Autorização
-        - Nome
-        
-        **Observações:**
-        - O modelo OCR é carregado apenas na primeira execução
-        - PDFs são processados página por página
-        - A qualidade da extração depende da qualidade da imagem/PDF
-        """)
+        st.download_button(
+            label="📥 Download Excel (XLSX)",
+            data=excel_file,
+            file_name=f"guias_medicas_{timestamp}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            type="primary"
+        )
+    
+    # Estatísticas
+    st.divider()
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Total de Guias", len(edited_df))
+    with col2:
+        ans_preenchidos = edited_df['1 - Registro ANS'].astype(str).str.strip().ne('').sum()
+        st.metric("ANS Extraídos", ans_preenchidos)
+    with col3:
+        guia_preenchidos = edited_df['2 - Número GUIA'].astype(str).str.strip().ne('').sum()
+        st.metric("GUIA Extraídos", guia_preenchidos)
+    with col4:
+        nome_preenchidos = edited_df['10 - Nome'].astype(str).str.strip().ne('').sum()
+        st.metric("Nomes Extraídos", nome_preenchidos)
 
-if __name__ == "__main__":
-    main()
+# Rodapé
+st.divider()
+st.caption("🔒 Os arquivos são processados localmente e não são armazenados no servidor")
