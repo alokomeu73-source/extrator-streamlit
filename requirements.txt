@@ -1,7 +1,9 @@
-streamlit==1.38.0
-pandas==2.2.2
-PyMuPDF==1.24.9
-easyocr==1.7.1
-torch==2.3.0
-torchvision==0.18.0
+streamlit
+pandas
+PyMuPDF
+easyocr
+torch==2.2.2
+torchvision
+numpy
+pillow
 openpyxl
