@@ -1,7 +1,3 @@
 # Para EasyOCR
 libgl1-mesa-glx
 libglib2.0-0
-
-# Para Tesseract (se usar pytesseract)
-tesseract-ocr
-tesseract-ocr-por
